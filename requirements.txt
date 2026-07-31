@@ -29,5 +29,13 @@ matplotlib>=3.8,<4.0
 imageio[ffmpeg]>=2.34,<3.0
 # Used directly by scripts/analyze_demo_actions.py to read specific dataset shards
 # without depending on lerobot's dataset loading code being available/working.
-huggingface_hub>=0.24,<1.0
+#
+# CORRECTION (caught by an actual Colab run): this was originally pinned <1.0,
+# which pip's resolver rejected outright -- lerobot's own core dependencies (not
+# even the libero extra, its BASE install) require
+# `huggingface-hub>=1.6.0,<2.0.0` (see pyproject.toml `dependencies` at the
+# pinned commit above), so <1.0 was unsatisfiable the moment lerobot is also in
+# the same requirements file. Matched to lerobot's range instead of guessing a
+# compromise.
+huggingface_hub>=1.6.0,<2.0.0
 pytest>=8.0,<9.0

@@ -345,6 +345,27 @@ PyPI, via `lerobot[libero] @ git+https://github.com/huggingface/lerobot.git@<sha
 Re-pin that commit deliberately if a newer lerobot is ever wanted; do not float
 `main`.
 
+### Second real Colab run, second failure (also plumbing)
+
+Next `pip install` attempt:
+
+```
+ERROR: Cannot install huggingface_hub<1.0 and >=0.24 and lerobot because these
+package versions have conflicting dependencies.
+ERROR: ResolutionImpossible
+```
+
+Root cause: our own `huggingface_hub>=0.24,<1.0` pin (added for
+`scripts/analyze_demo_actions.py`) directly conflicted with lerobot's own
+**core** dependency (not even the `libero` extra — its base install) of
+`huggingface-hub>=1.6.0,<2.0.0`, read from `pyproject.toml`'s `dependencies`
+list at the pinned commit. Fixed by widening our pin to `>=1.6.0,<2.0.0` to
+match. Low-risk: this codebase already exercises `huggingface_hub` 1.16.4
+locally (`scripts/analyze_demo_actions.py`'s real run that produced the H3
+baseline above used this exact version), so the API surface we depend on
+(`hf_hub_download`) is already confirmed working on a 1.x release, not just
+assumed compatible.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
