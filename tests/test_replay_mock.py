@@ -153,3 +153,25 @@ def test_full_mock_run_and_resume(tmp_path):
     run_demo_replay.run(cfg2, config_file=config_path, mock=True)
     n_files_second_run = len(list((tmp_path / "remote" / "episodes").glob("*.parquet")))
     assert n_files_second_run == n_files_first_run
+
+
+def test_run_aborts_immediately_on_wiring_bug(tmp_path, monkeypatch):
+    """If control_mode never reaches the env, run() must abort right after the
+    first episode of each mode -- before running the rest of the sweep and
+    before computing any success rate."""
+    import xgap_code.harness as harness_module
+
+    def _broken_mock_env(*, control_mode, **kwargs):
+        return harness_module.MockLiberoEnv(control_mode=control_mode, simulate_wiring_bug=True)
+
+    monkeypatch.setattr(run_demo_replay, "MockLiberoEnv", _broken_mock_env)
+
+    config_path = _minimal_config_yaml(tmp_path)
+    cfg = DemoReplayConfig.from_yaml(config_path)
+    decision = run_demo_replay.run(cfg, config_file=config_path, mock=True)
+
+    assert decision["decision"] == "control_mode_not_wired"
+    # Only the 2 probe episodes (one per control_mode) should have run -- not the full
+    # 1*2*2=4 episode sweep this config would otherwise produce.
+    n_files = len(list((tmp_path / "remote" / "episodes").glob("*.parquet")))
+    assert n_files == 2

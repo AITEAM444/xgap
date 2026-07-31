@@ -180,15 +180,28 @@ episodes — tasks 32/33/39, single-grasp) via `huggingface_hub`, loading only
   across `libero_goal`/`libero_object` too before treating this as exhaustively
   confirmed. Full per-dimension stats in `outputs/demo_action_stats/episodes.json`.
 
-**Dead end, documented so it isn't re-attempted:** `meta/episodes/*.parquet`'s
+**Dead end, documented so it isn't re-attempted — generalized, not file-specific:**
+what's dead is not "one stale metadata file," it's **hand-navigating the
+dataset's parquet layout at all** (resolving which shard holds which episode,
+reading chunk/file-index columns, scanning shards to find a task). That
+approach was only ever an expedient fallback for this session (no lerobot
+installed locally), and it already showed why it's fragile: `meta/episodes/*.parquet`'s
 `data/chunk_index` / `data/file_index` columns (meant to map an episode to its
-shard file) are **stale** for this dataset as currently hosted — they claim
-episodes 0-14 all live in `chunk-000/file-000.parquet`; that file on disk only
-actually contains episodes 0-2. `xgap_code/dataset_io.py` therefore goes
-through lerobot's own `LeRobotDataset` (not yet runnable this session — see
-below) rather than re-deriving shard locations from that metadata, and
-`scripts/analyze_demo_actions.py` takes shard paths as explicit arguments
-instead of resolving them automatically.
+shard file) turned out to be **stale** for this dataset as currently hosted —
+they claim episodes 0-14 all live in `chunk-000/file-000.parquet`; that file on
+disk only actually contains episodes 0-2. There is no reason to expect the next
+hand-rolled shortcut through this layout to be more trustworthy than that one
+was.
+
+**The living path is `LeRobotDataset` (lerobot's own dataset API), full stop.**
+`xgap_code/dataset_io.py`'s real implementation goes through it, not through
+any parquet-shard bookkeeping of ours. `scripts/analyze_demo_actions.py` is
+the one exception, and it stays an explicit, self-contained, clearly-labeled
+one-off (shard paths passed explicitly, never resolved automatically) that
+produced this session's H3 baseline before lerobot was available — it is not
+the pattern to extend or reuse for anything in steps 3+. Any future code that
+needs demo data should call into `dataset_io.load_task_demo_episodes` (or
+`LeRobotDataset` directly), never re-derive shard locations by hand.
 
 ### What's written but NOT yet verified for real
 
@@ -208,16 +221,97 @@ was available this session. Before trusting a real (non-`--mock`) run of
   independent of `control_mode` (see `decide_env_convention`'s
   `both_low_suspect_init_state` branch).
 
-### Next action (needs Colab)
+## Follow-up round: wiring verification, gripper-duration metric, plot, Colab assets
 
-Run `python scripts/run_demo_replay.py --config configs/demo_replay.yaml`
-(without `--mock`) in Colab after `setup_colab.sh`. Per the working decision
-this session: dual-run `relative`/`absolute`, adopt whichever has higher
-success as the confirmed env/demo convention (not a sweep axis — H4 stays in
-step 4), and if both are low the suspect is init-state/episode-index wiring,
-not `control_mode` — `decide_env_convention()` already encodes this branch and
-writes it to `control_mode_decision.json`. Stop and report per the original
-instruction once this has run for real.
+Four code changes made after the step-2-prep round above, plus the actual
+Colab-facing execution assets (previously missing: a real notebook and a
+smoke-scale config). All still validated only via `MockLiberoEnv` + pytest —
+no lerobot/mujoco available this session (see "Local environment check").
+
+**(a) control_mode plumbing verification.** A tie in demo-replay success rate
+and a `control_mode` flag that never reached the simulator look identical
+downstream (both conditions "behave the same") but are not the same finding —
+one is a statement about physics, the other means we never tested different
+physics at all. `harness.read_actual_control_mode(env)` reads
+`robot.controller.use_delta` back from the real env's controller *after
+reset* (not just the value we requested), logged as `actual_control_mode` on
+every episode. `replay.verify_control_mode_wiring()` checks this — one
+reading per requested mode is enough — and `scripts/run_demo_replay.py`'s
+`run()` calls it as soon as it has one episode from each mode (i.e. after the
+very first task's `episode_seed=0`), **aborting immediately with
+`decision: "control_mode_not_wired"` before running anything else or
+computing any success rate** if the two requested modes produced the same
+actual controller state. `MockLiberoEnv` gained a `simulate_wiring_bug` test
+hook so this abort path has real test coverage
+(`tests/test_wiring_and_metrics.py`, `test_run_aborts_immediately_on_wiring_bug`).
+
+**(b) Longest continuous gripper-close run, not just "did a close command
+appear."** `gripper_metrics.longest_close_run()` measures the longest run of
+consecutive `action[:,6] > 0` steps actually executed, logged as
+`longest_close_run_steps` on every episode. Compared against
+`DEMO_MIN_ACTUATION_LAG_STEPS = 15` (the lower bound measured from real demos
+this session, see H3 baseline above): a rollout whose longest close run is
+under 15 steps cannot have physically grasped, independent of whether the
+sign convention is even correct — a third distinguishable failure mode
+alongside "wrong sign" and "never commands close at all."
+
+**(c) `action[:,6]` histogram, policy vs demo.**
+`plots.plot_gripper_action_histogram(demo, policy, save_path)` overlays the
+two distributions. The demo side is always the measured `{-1,+1}` two-spike
+shape; if a real policy rollout's mass clusters near 0 instead, that reads as
+a normalization bug on a dimension that should never be continuous (e.g.
+MEAN_STD stats applied to a naturally bimodal signal) — visually distinct from
+a sign flip, which still shows two spikes, just swapped. No real policy data
+exists yet (step 3); `tests/test_wiring_and_metrics.py` exercises it against
+synthetic demo-like and near-zero-clustered "policy" arrays to confirm the
+plot renders and saves correctly.
+
+**(d) Generalized the "dead end" note above** — it no longer singles out one
+stale metadata file; it says hand-navigating this dataset's parquet layout at
+all is the thing not to repeat, and `LeRobotDataset` is the only path to trust
+going forward. (Section above has been rewritten in place, not appended.)
+
+### Colab execution assets
+
+- **`configs/demo_replay_smoke.yaml`** — 1 suite, 1 task, 1 episode, both
+  `control_mode`s (2 episodes total). The *first* real (non-`--mock`) run
+  should use this, not `configs/demo_replay.yaml`. Per instruction: code
+  written against `lerobot` source without ever running it is expected to
+  break on API mismatches first — that's plumbing work, not a science result,
+  and should be shaken out at this minimal scale before widening to the full
+  config. See "How to read the first real run" below.
+- **`notebooks/run_replay.ipynb`** — thin by construction: cell 1 sets
+  `MUJOCO_GL=egl` (before any other import, per `setup_colab.sh`'s own
+  warning), cell 2 mounts Drive, cell 3 runs `setup_colab.sh` (which already
+  logs `nproc`/`nvidia-smi`/`free -g`/library versions to
+  `logs/env_meta.log` — that's the "log hardware in the first cell"
+  requirement, satisfied by calling the script rather than duplicating its
+  logging in notebook code), cell 4 runs `scripts/run_demo_replay.py` against
+  the smoke config. No control flow lives in the notebook itself.
+
+### How to read the first real (non-`--mock`) run
+
+Per instruction, these two outcomes are NOT the same finding and must be
+reported separately, not conflated:
+
+- **Script crashes with a Python traceback** (`AttributeError`,
+  `ImportError`, a `LeRobotDataset` constructor rejecting a kwarg, etc.) →
+  this is an API mismatch between what `harness.py`/`dataset_io.py` assumed
+  from reading `lerobot` source and what the actually-installed version
+  provides. It is expected on the first run. Fix the plumbing, re-run the
+  smoke config, repeat until it completes without crashing. **This is not
+  evidence about SmolVLA or LIBERO** — do not record it as a hypothesis
+  result.
+- **Script completes and prints a decision** (whether
+  `control_mode_confirmed`, `both_low_suspect_init_state`,
+  `tie_inconclusive`, or the new `control_mode_not_wired`) → only once this
+  happens is there an actual harness-fidelity result to report. What matters
+  for the eventual verdict is the *gap* between the two `control_mode`
+  success rates, not their absolute values — a harness that gets 60%/20% is
+  more informative than one stuck at exactly 0%/0% either way.
+
+Scale up (`episodes_per_task`, more `task_ids`, more suites) only after the
+smoke config completes cleanly end to end.
 
 ## Design constraints encoded in this codebase (do not violate)
 

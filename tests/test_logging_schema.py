@@ -28,6 +28,8 @@ def _dummy_record(control_mode="relative", success=True) -> EpisodeRecord:
         time_reset_s=0.1,
         control_mode=control_mode,
         control_freq=10,
+        longest_close_run_steps=5,
+        actual_control_mode=control_mode,
     )
 
 

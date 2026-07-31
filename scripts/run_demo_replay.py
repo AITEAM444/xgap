@@ -29,7 +29,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from xgap_code.config import DemoReplayConfig  # noqa: E402
 from xgap_code.harness import MockLiberoEnv, make_real_libero_env  # noqa: E402
 from xgap_code.logging_schema import EpisodeStore, episode_key  # noqa: E402
-from xgap_code.replay import decide_env_convention, replay_episode, summarize_by_control_mode  # noqa: E402
+from xgap_code.replay import (  # noqa: E402
+    decide_env_convention,
+    replay_episode,
+    summarize_by_control_mode,
+    verify_control_mode_wiring,
+)
 
 
 def _git_commit() -> str:
@@ -70,10 +75,60 @@ def _write_decision(store: EpisodeStore, decision: dict) -> None:
     path.write_text(json.dumps(decision, indent=2, default=str), encoding="utf-8")
 
 
+def _run_one_episode(
+    cfg: DemoReplayConfig, config_file: str, mock: bool, git_commit: str,
+    suite: str, task_id, task_label: str, episode_seed: int, control_mode: str,
+):
+    condition = f"demo_replay_{control_mode}"
+    if mock:
+        env = MockLiberoEnv(control_mode=control_mode)
+        demo_actions = _mock_demo_actions(episode_seed)
+    else:
+        env = make_real_libero_env(
+            task_suite_name=suite,
+            task_id=task_id,
+            demo_episode_index_within_task=episode_seed,
+            control_mode=control_mode,
+            control_freq=cfg.control_freq,
+        )
+        from xgap_code.dataset_io import load_task_demo_episodes
+
+        demo_episodes = load_task_demo_episodes(
+            cfg.dataset_repo_id, task_name=task_label, max_episodes=cfg.episodes_per_task
+        )
+        demo_actions = demo_episodes[episode_seed].actions
+
+    record = replay_episode(
+        env,
+        demo_actions,
+        task_id=task_label,
+        task_suite=suite,
+        episode_seed=episode_seed,
+        environment_seed=episode_seed,
+        condition=condition,
+        control_mode=control_mode,
+        control_freq=cfg.control_freq,
+        checkpoint_name=cfg.checkpoint_name,
+        checkpoint_hash=cfg.checkpoint_hash,
+        git_commit=git_commit,
+        config_file=config_file,
+    )
+    env.close()
+    return record
+
+
 def run(cfg: DemoReplayConfig, config_file: str, mock: bool) -> dict:
     store = EpisodeStore(cfg.local_output_root, cfg.remote_output_root, cfg.sync_every_n_episodes)
     git_commit = _git_commit()
     all_rows: list[dict] = []
+    # Populated from the FIRST episode we actually run for each control_mode
+    # (across the whole sweep, not per-task) -- one reading is enough to catch a
+    # wiring bug, and checking early means we abort before wasting Colab time on
+    # a sweep whose control_mode never reached the simulator. Not reset per task:
+    # if resume reused a cached row for the first task's episodes, we still want
+    # the earliest real reading available.
+    actual_mode_by_requested: dict[str, str | None] = {}
+    wiring_verified = False
 
     for suite in cfg.task_suites:
         task_ids = (cfg.task_ids or {}).get(suite) or [0]
@@ -81,51 +136,33 @@ def run(cfg: DemoReplayConfig, config_file: str, mock: bool) -> dict:
             task_label = f"{suite}:{task_id}"
             for episode_seed in range(cfg.episodes_per_task):
                 for control_mode in cfg.control_modes:
-                    condition = f"demo_replay_{control_mode}"
-                    key = episode_key(condition, suite, task_label, episode_seed)
+                    key = episode_key(f"demo_replay_{control_mode}", suite, task_label, episode_seed)
 
                     if cfg.resume and store.is_done(key):
                         row = _load_existing_row(store, key)
                         if row is not None:
                             all_rows.append(row)
+                            actual_mode_by_requested.setdefault(control_mode, row.get("actual_control_mode"))
                         continue
 
-                    if mock:
-                        env = MockLiberoEnv()
-                        demo_actions = _mock_demo_actions(episode_seed)
-                    else:
-                        env = make_real_libero_env(
-                            task_suite_name=suite,
-                            task_id=task_id,
-                            demo_episode_index_within_task=episode_seed,
-                            control_mode=control_mode,
-                            control_freq=cfg.control_freq,
-                        )
-                        from xgap_code.dataset_io import load_task_demo_episodes
-
-                        demo_episodes = load_task_demo_episodes(
-                            cfg.dataset_repo_id, task_name=task_label, max_episodes=cfg.episodes_per_task
-                        )
-                        demo_actions = demo_episodes[episode_seed].actions
-
-                    record = replay_episode(
-                        env,
-                        demo_actions,
-                        task_id=task_label,
-                        task_suite=suite,
-                        episode_seed=episode_seed,
-                        environment_seed=episode_seed,
-                        condition=condition,
-                        control_mode=control_mode,
-                        control_freq=cfg.control_freq,
-                        checkpoint_name=cfg.checkpoint_name,
-                        checkpoint_hash=cfg.checkpoint_hash,
-                        git_commit=git_commit,
-                        config_file=config_file,
+                    record = _run_one_episode(
+                        cfg, config_file, mock, git_commit,
+                        suite, task_id, task_label, episode_seed, control_mode,
                     )
-                    env.close()
                     store.write_episode(key, record)
                     all_rows.append(record.to_row())
+                    actual_mode_by_requested.setdefault(control_mode, record.actual_control_mode)
+
+                # As soon as we have one reading per requested control_mode, verify
+                # wiring BEFORE running anything else -- do not wait until the full
+                # sweep finishes and do not look at success rates first.
+                if not wiring_verified and len(actual_mode_by_requested) == len(cfg.control_modes):
+                    wiring_verified = True
+                    abort = verify_control_mode_wiring(actual_mode_by_requested)
+                    if abort is not None:
+                        store.sync_to_remote()
+                        _write_decision(store, abort)
+                        return abort
 
     store.sync_to_remote()
     mode_summary = summarize_by_control_mode(all_rows)

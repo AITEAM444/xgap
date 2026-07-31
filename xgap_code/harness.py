@@ -61,6 +61,35 @@ def make_real_libero_env(
     )
 
 
+def read_actual_control_mode(env) -> str | None:
+    """Read back the control mode ACTUALLY wired into the env, not just the value
+    we requested when constructing it.
+
+    Why this matters: LiberoEnv.reset() sets `robot.controller.use_delta` based on
+    `self.control_mode` (True for "relative", False for "absolute") -- see
+    lerobot's `src/lerobot/envs/libero.py`. A plumbing bug (wrong kwarg name typo,
+    a config field silently not forwarded, an env wrapper that reconstructs the
+    env without passing control_mode through, etc.) could leave `use_delta`
+    unchanged regardless of what we pass in, and the resulting demo-replay success
+    rates would look like real physics evidence when they're actually noise from a
+    control_mode that never reached the simulator. Must be called AFTER env.reset().
+
+    Returns "relative" (use_delta=True), "absolute" (use_delta=False), or None if
+    unavailable (env not yet reset, or a mock without a controller/reporting hook).
+    """
+    inner = getattr(env, "_env", None)  # real LiberoEnv's underlying OffScreenRenderEnv
+    if inner is not None:
+        robots = getattr(inner, "robots", None)
+        if not robots:
+            return None
+        use_delta = getattr(robots[0].controller, "use_delta", None)
+        if use_delta is None:
+            return None
+        return "relative" if use_delta else "absolute"
+    # MockLiberoEnv test hook -- see its `reported_control_mode` property below.
+    return getattr(env, "reported_control_mode", None)
+
+
 @dataclass
 class MockLiberoEnv:
     """Stands in for LiberoEnv in tests where mujoco/libero are not installed.
@@ -74,8 +103,19 @@ class MockLiberoEnv:
 
     max_steps: int = 50
     require_final_gripper_close: bool = True
+    # What this mock instance was actually constructed with -- stands in for the real
+    # env's `robot.controller.use_delta` so read_actual_control_mode() can be exercised
+    # in tests without a simulator.
+    control_mode: str = "relative"
+    # Test hook: simulates a wiring bug where control_mode never reaches the env --
+    # reported_control_mode always says "relative" regardless of what was requested.
+    simulate_wiring_bug: bool = False
     _t: int = field(default=0, init=False)
     _last_gripper: float = field(default=-1.0, init=False)
+
+    @property
+    def reported_control_mode(self) -> str:
+        return "relative" if self.simulate_wiring_bug else self.control_mode
 
     def reset(self, seed: int | None = None):
         self._t = 0

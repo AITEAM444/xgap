@@ -52,6 +52,15 @@ EPISODE_SCHEMA = pa.schema(
         pa.field("time_reset_s", pa.float64()),
         pa.field("control_mode", pa.string()),
         pa.field("control_freq", pa.int64()),
+        # Plumbing verification: the control mode actually read back from the env's
+        # controller (robot.controller.use_delta) after reset, NOT just the value we
+        # requested -- see harness.read_actual_control_mode. Null if unavailable.
+        pa.field("actual_control_mode", pa.string(), nullable=True),
+        # Longest consecutive run of "close" (action[:,6] > 0) commands actually
+        # executed. Demos show ~15-20 step actuator lag before a close visibly
+        # registers (see xgap_code/gripper_metrics.py) -- a run shorter than that
+        # cannot physically have grasped, independent of sign convention.
+        pa.field("longest_close_run_steps", pa.int64()),
     ]
 )
 
@@ -85,8 +94,10 @@ class EpisodeRecord:
     time_reset_s: float
     control_mode: str
     control_freq: int
+    longest_close_run_steps: int
     policy_seed: int | None = None
     candidate_id: int | None = None
+    actual_control_mode: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}

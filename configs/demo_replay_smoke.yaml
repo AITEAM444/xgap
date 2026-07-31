@@ -1,0 +1,47 @@
+# Smoke-scale demo replay: 1 suite, 1 task, 1 episode, both control_modes (2 episodes
+# total). Run this FIRST in Colab, not configs/demo_replay.yaml -- xgap_code/harness.py
+# and xgap_code/dataset_io.py were written against lerobot's source without ever being
+# executed (no lerobot install was available during development). The first real run
+# is expected to break on API mismatches (wrong kwarg name, a renamed attribute, etc.)
+# -- that is plumbing work, not a science result. See README "How to read the first
+# real run". Only widen episodes_per_task / task_ids / task_suites once this completes
+# end to end without crashing.
+
+experiment_name: demo_replay_smoke
+
+local_output_root: outputs/demo_replay_smoke/_local
+remote_output_root: null  # set to a Drive path once running in Colab, e.g.
+                          # /content/drive/MyDrive/xgap/outputs/demo_replay_smoke
+
+dataset_repo_id: HuggingFaceVLA/libero
+
+task_suites:
+  - libero_10
+
+task_ids:
+  libero_10: [0]
+
+episodes_per_task: 1
+
+control_modes:
+  - relative
+  - absolute
+
+control_freq: 10  # matches HuggingFaceVLA/libero's recorded fps -- see configs/demo_replay.yaml comment
+
+init_states: true
+
+n_decision_points: 1
+exec_horizon: 1
+selection_unit: chunk
+
+parallel_envs: auto
+parallel_envs_cap: 8
+sync_every_n_episodes: 1  # sync every episode at this tiny scale -- there are only 2
+
+checkpoint_name: N/A_demo_replay
+checkpoint_hash: N/A_demo_replay
+git_commit: unknown  # overwritten at runtime by `git rev-parse HEAD`
+
+random_seed: 0
+resume: true

@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from .gripper_metrics import longest_close_run
+from .harness import read_actual_control_mode
 from .logging_schema import EpisodeRecord
 from .metering import StageTimer
 
@@ -38,6 +40,10 @@ def replay_episode(
 
     with timer.stage("reset"):
         env.reset(seed=environment_seed)
+
+    # Plumbing verification: read the env's ACTUAL controller state, not just the
+    # control_mode we requested -- see harness.read_actual_control_mode.
+    actual_control_mode = read_actual_control_mode(env)
 
     success = False
     executed_actions: list[list[float]] = []
@@ -71,6 +77,8 @@ def replay_episode(
         execution_time=execution_time,
         control_mode=control_mode,
         control_freq=control_freq,
+        actual_control_mode=actual_control_mode,
+        longest_close_run_steps=longest_close_run(executed_actions),
         **timer.as_fields(),
     )
 
@@ -91,6 +99,37 @@ def summarize_by_control_mode(rows: list[dict]) -> dict[str, dict[str, float]]:
     }
 
 
+def verify_control_mode_wiring(actual_by_requested: dict[str, str | None]) -> dict[str, Any] | None:
+    """Given the actual_control_mode read back from the env (see
+    harness.read_actual_control_mode) for each requested control_mode -- one
+    reading per mode is enough, taken from the first episode of each -- check
+    that the flag actually reached the simulator.
+
+    A tie in success rate and a wiring failure look similar downstream (both
+    conditions behave "the same"), but they are not the same finding: a tie is
+    a statement about physics, a wiring failure means we never tested
+    different physics at all. This MUST be checked before any success rate is
+    computed, per instruction -- returns an abort decision (to be surfaced
+    immediately, without running the rest of the sweep) if wiring looks
+    broken, or None if it's safe to proceed.
+    """
+    distinct = set(actual_by_requested.values())
+    if None in distinct or len(distinct) < len(actual_by_requested):
+        return {
+            "decision": "control_mode_not_wired",
+            "reason": (
+                f"control_mode did not reach the environment: requested modes "
+                f"{actual_by_requested} did not produce distinct actual controller "
+                "states (robot.controller.use_delta after reset). This is a plumbing "
+                "bug, not a 'tie' -- aborting before computing any success rate. Fix "
+                "the wiring (see harness.make_real_libero_env / read_actual_control_mode) "
+                "and re-run; do not interpret any success-rate numbers from this run."
+            ),
+            "actual_control_mode_by_requested_condition": actual_by_requested,
+        }
+    return None
+
+
 # Below what success rate is a control_mode considered "not obviously working" --
 # used only to decide the branch in decide_env_convention, not as a pass/fail
 # threshold for anything else. Kept as a module constant (not config) because it
@@ -105,7 +144,11 @@ def decide_env_convention(mode_summary: dict[str, dict[str, float]]) -> dict[str
     instruction: dual-run relative/absolute, adopt whichever is higher as the
     confirmed convention for downstream steps; if BOTH are low, the suspect is
     NOT control_mode but init-state setup, and this must be flagged rather
-    than silently picking a "winner"."""
+    than silently picking a "winner".
+
+    Callers MUST call verify_control_mode_wiring() first and abort if it
+    returns non-None -- an exact tie handled below assumes the flag reached
+    the environment; it is not a substitute for that check."""
     if not mode_summary:
         return {"decision": "inconclusive", "reason": "no episodes recorded"}
 
