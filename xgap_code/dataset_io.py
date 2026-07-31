@@ -33,6 +33,17 @@ trusted over the docstring from the start. Filtering below is back to
 `ep["tasks"][0]`, this time compared against the correct value (the actual
 LIBERO instruction string, via `harness.get_libero_task_language`) rather than
 our internal label.
+
+CORRECTION 3 (a third Colab run): `ValueError: need at least one array to
+stack` -- the fix above pre-seeded `frames_by_episode` keys from
+`ds.episodes` (`filter_episodes()`'s sorted, dataset-global episode indices),
+then only kept frames whose `episode_index` matched one of those keys. If the
+filtered `LeRobotDataset`'s own `__getitem__` reports `episode_index` in a
+different numbering than `filter_episodes()` returns (never actually
+confirmed either way from source), every frame gets silently dropped and an
+episode ends up with zero frames. Fixed to build the grouping purely from
+`episode_index` values actually observed on `ds[i]`, with no cross-referenced
+assumption about a second accessor using the same numbering.
 """
 
 from __future__ import annotations
@@ -78,23 +89,34 @@ def load_task_demo_episodes(
             f"First few available tasks: {available[:5]}"
         )
 
-    # filter_episodes() (dataset_metadata.py) returns episode indices in SORTED order.
-    # within_task_index below assumes that sorted dataset-global order matches LIBERO's own
-    # init-state collection order for this task -- an assumption, not a fact; see
-    # harness.make_real_libero_env's docstring for how to treat it (high replay success is
-    # supporting evidence; low success with control_mode/init_states both otherwise correct
-    # points back at this mapping).
     ds = LeRobotDataset(repo_id, episode_filter=lambda ep: ep["tasks"][0] == task_name)
-    episode_indices = sorted(ds.episodes) if ds.episodes else []
-    if max_episodes is not None:
-        episode_indices = episode_indices[:max_episodes]
 
-    frames_by_episode: dict[int, list[dict]] = {ep: [] for ep in episode_indices}
+    # Group by episode_index as it ACTUALLY appears on the frames returned by ds[i], rather
+    # than pre-seeding keys from ds.episodes (filter_episodes()'s return value) and hoping the
+    # two numberings agree. An earlier version did the latter and crashed with `ValueError:
+    # need at least one array to stack` on the very next real run -- ds.episodes lists
+    # dataset-global indices, but there's no source-confirmed guarantee the (possibly
+    # episode_filter-scoped) dataset's own __getitem__ reports episode_index in that same
+    # numbering. Building the grouping purely from observed frame data sidesteps that
+    # question entirely; within_task_index ordering below assumes dataset-global
+    # (episode_index) order matches LIBERO's own init-state collection order for this task --
+    # still a separate, unverified assumption, see harness.make_real_libero_env's docstring.
+    frames_by_episode: dict[int, list[dict]] = {}
     for i in range(len(ds)):
         frame = ds[i]
         ep_idx = _to_scalar(frame["episode_index"])
-        if ep_idx in frames_by_episode:
-            frames_by_episode[ep_idx].append(frame)
+        frames_by_episode.setdefault(ep_idx, []).append(frame)
+
+    if not frames_by_episode:
+        raise ValueError(
+            f"episode_filter matched task '{task_name}' but the resulting dataset has 0 "
+            f"frames (repo_id='{repo_id}'). This means the filter and the loaded data "
+            f"disagree -- report this, do not silently retry with a different task."
+        )
+
+    episode_indices = sorted(frames_by_episode.keys())
+    if max_episodes is not None:
+        episode_indices = episode_indices[:max_episodes]
 
     episodes: list[DemoEpisode] = []
     for within_idx, ep_idx in enumerate(episode_indices):
