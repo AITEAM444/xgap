@@ -44,13 +44,73 @@ confirmed either way from source), every frame gets silently dropped and an
 episode ends up with zero frames. Fixed to build the grouping purely from
 `episode_index` values actually observed on `ds[i]`, with no cross-referenced
 assumption about a second accessor using the same numbering.
+
+CORRECTION 4 (diagnosed directly, not from another blind Colab retry): after
+correction 3, `filter_episodes()` correctly identified all 33 episodes for a
+test task, but only 2 of them (out of 33) ended up with any retrievable
+frames. Root cause, confirmed from lerobot's actual source, is a REAL bug/data
+problem upstream of our code, not fixable by changing our own filtering
+logic: `LeRobotDatasetMetadata.get_data_file_path()`
+(`src/lerobot/datasets/dataset_metadata.py`) resolves which shard file an
+episode's data lives in via `meta/episodes/*.parquet`'s `data/chunk_index` /
+`data/file_index` columns -- exactly the columns already found to be STALE
+for HuggingFaceVLA/libero earlier this session (episode_index 8's row claims
+`data/chunk-000/file-000.parquet`; that file's real contents are only
+episodes 0-2). `DatasetReader.get_episodes_file_paths()`
+(`src/lerobot/datasets/dataset_reader.py`) uses this to build the
+`allow_patterns` list for a SELECTIVE `snapshot_download` when constructing
+`LeRobotDataset` with `episode_filter`/`episodes` set -- so for most requested
+episodes, the wrong (or an incomplete) shard file gets fetched, and that
+episode's frames silently never materialize. This is not something to work
+around by monkey-patching lerobot (against project principle) -- worked
+around instead by forcing a full, non-selective download of the dataset's
+`data/` directory into the SAME cache directory lerobot's own downloader
+reads from, before ever constructing `LeRobotDataset` with a filter. See
+`ensure_full_dataset_cached()` below.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
+
+
+@lru_cache(maxsize=None)
+def ensure_full_dataset_cached(repo_id: str) -> None:
+    """Force a full download of `repo_id`'s `data/` (and `meta/`) directory into
+    lerobot's own Hub cache, bypassing `LeRobotDataset`'s normal selective
+    per-episode download.
+
+    See CORRECTION 4 in this module's docstring for why this is necessary: the
+    selective downloader trusts stale shard-location metadata and silently
+    fetches the wrong files for most episodes. Downloading everything up front
+    means whichever (possibly wrong) files lerobot's own logic later asks for,
+    they are already present locally -- nothing is silently missing.
+
+    Uses `HF_LEROBOT_HUB_CACHE` (lerobot's actual cache dir, from
+    `lerobot.utils.constants` -- NOT a path we invent) as `cache_dir`, so this
+    pre-download lands exactly where `LeRobotDataset` will look for it.
+    `@lru_cache` avoids re-verifying the full manifest on every call within one
+    process (`snapshot_download` itself is already incremental/idempotent
+    across process runs -- already-downloaded files aren't re-fetched).
+
+    Cost: this is a real, large download (tens of GB for HuggingFaceVLA/libero
+    -- both `data/chunk-000` and `data/chunk-001`, since episodes for a single
+    task/suite are NOT contiguous within a chunk -- see the "suite blocking"
+    note in the analysis this session). Point `HF_LEROBOT_HOME` at Drive (see
+    setup_colab.sh) so this is a one-time cost, not repeated every session.
+    """
+    from huggingface_hub import snapshot_download
+    from lerobot.utils.constants import HF_LEROBOT_HUB_CACHE
+
+    snapshot_download(
+        repo_id,
+        repo_type="dataset",
+        cache_dir=str(HF_LEROBOT_HUB_CACHE),
+        allow_patterns=["data/**", "meta/**"],
+    )
 
 
 @dataclass
@@ -76,6 +136,10 @@ def load_task_demo_episodes(
 ) -> list[DemoEpisode]:
     from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    # Work around stale shard-location metadata -- see CORRECTION 4 / ensure_full_dataset_cached's
+    # docstring. Must happen before LeRobotDataset(episode_filter=...) below.
+    ensure_full_dataset_cached(repo_id)
 
     # Metadata-only load (just the meta/ dir -- info.json, tasks.parquet, episodes/*.parquet;
     # no frame or video data) purely to resolve the natural-language task string to this

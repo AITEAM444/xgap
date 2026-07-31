@@ -5,7 +5,7 @@
 #   !bash /content/drive/MyDrive/xgap/setup_colab.sh
 #
 # IMPORTANT: every env var this script `export`s (MUJOCO_GL, HF_HOME,
-# LEROBOT_DATASET_CACHE, LIBERO_CONFIG_PATH) only affects THIS script's own
+# HF_LEROBOT_HOME, LIBERO_CONFIG_PATH) only affects THIS script's own
 # subprocesses (pip install, the verification imports below). It does NOT
 # propagate to a later, separate `!python scripts/run_demo_replay.py` cell --
 # each `!`-prefixed cell is its own subprocess, and bash `export` dies with the
@@ -25,7 +25,7 @@
 # 2. After running this script, run the notebook's env-adoption cell (reads
 #    /content/.xgap_env, written by step 0 below, into os.environ the same
 #    way) BEFORE running any script cell -- otherwise HF_HOME/
-#    LEROBOT_DATASET_CACHE/LIBERO_CONFIG_PATH silently reset to their
+#    HF_LEROBOT_HOME/LIBERO_CONFIG_PATH silently reset to their
 #    unconfigured defaults in that cell's subprocess. This is exactly the bug
 #    that caused libero's interactive dataset-path prompt to reappear in
 #    `run_demo_replay.py` even though setup_colab.sh's own verification step
@@ -46,15 +46,17 @@ XGAP_DRIVE_ROOT="${XGAP_DRIVE_ROOT:-/content/drive/MyDrive/xgap}"
 # they are not re-downloaded every session.
 export HF_HOME="${HF_HOME:-${XGAP_DRIVE_ROOT}/.hf_cache}"
 
-# LIBERO demo dataset cache: kept LOCAL to the Colab VM disk (/content), not Drive.
-# Rationale (fill in after first real run -- see README.md "Dataset cache decision"):
-#   Drive is a network mount; large sequential reads of many small parquet/video
-#   shards over it are frequently the actual bottleneck in Colab, worse than a
-#   cold re-download to local SSD if the dataset is small enough. We do not know
-#   yet whether HuggingFaceVLA/libero is small enough for Drive to be fine --
-#   measure `du -sh` and first-load wall time in Colab and record the verdict in
-#   README.md before changing this default.
-export LEROBOT_DATASET_CACHE="${LEROBOT_DATASET_CACHE:-/content/xgap_dataset_cache}"
+# HF_LEROBOT_HOME: lerobot's ACTUAL dataset cache dir (from lerobot.utils.constants;
+# defaults to $HF_HOME/lerobot if unset). CORRECTION: an earlier version of this script
+# exported a made-up `LEROBOT_DATASET_CACHE` variable that lerobot never reads at all --
+# it silently had zero effect. Set to Drive, not local /content: working around
+# HuggingFaceVLA/libero's stale shard-location metadata (see xgap_code/dataset_io.py
+# "CORRECTION 4") requires force-downloading most/all of the dataset (tens of GB) up
+# front regardless of which few episodes are actually used -- paying that cost once and
+# persisting it on Drive clearly beats repeating a many-GB, many-minute download on every
+# fresh Colab runtime. (Original plan was local disk for read-performance during training
+# loops; that consideration is secondary now that a large upfront download is unavoidable.)
+export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-${XGAP_DRIVE_ROOT}/.hf_lerobot_cache}"
 
 # LIBERO_CONFIG_PATH: where the `libero` package's own config.yaml (dataset/bddl/assets
 # paths) lives. Kept LOCAL, not Drive: its contents are computed from THIS session's
@@ -64,12 +66,12 @@ export LEROBOT_DATASET_CACHE="${LEROBOT_DATASET_CACHE:-/content/xgap_dataset_cac
 # session is cheap and always correct for that session.
 export LIBERO_CONFIG_PATH="${LIBERO_CONFIG_PATH:-/content/xgap_libero_config}"
 
-mkdir -p "${HF_HOME}" "${LEROBOT_DATASET_CACHE}"
+mkdir -p "${HF_HOME}" "${HF_LEROBOT_HOME}"
 mkdir -p "${XGAP_DRIVE_ROOT}/outputs" "${XGAP_DRIVE_ROOT}/logs"
 
 echo "[xgap setup] XGAP_DRIVE_ROOT=${XGAP_DRIVE_ROOT}"
 echo "[xgap setup] HF_HOME=${HF_HOME}"
-echo "[xgap setup] LEROBOT_DATASET_CACHE=${LEROBOT_DATASET_CACHE}"
+echo "[xgap setup] HF_LEROBOT_HOME=${HF_LEROBOT_HOME}"
 echo "[xgap setup] LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH}"
 
 # Hand these resolved values to the notebook's env-adoption cell (see header comment
@@ -80,7 +82,7 @@ cat > /content/.xgap_env <<ENVEOF
 XGAP_DRIVE_ROOT=${XGAP_DRIVE_ROOT}
 MUJOCO_GL=${MUJOCO_GL}
 HF_HOME=${HF_HOME}
-LEROBOT_DATASET_CACHE=${LEROBOT_DATASET_CACHE}
+HF_LEROBOT_HOME=${HF_LEROBOT_HOME}
 LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH}
 ENVEOF
 

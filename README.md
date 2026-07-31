@@ -45,14 +45,14 @@ script (Colab's `!` subshell env does not propagate into the kernel process).
 
 ### Dataset cache decision
 
-**Status: not yet measured — do not trust a default here.** `setup_colab.sh`
-currently points `LEROBOT_DATASET_CACHE` at local Colab disk (`/content/...`)
-and `HF_HOME` (checkpoints/configs) at Drive. Before relying on this, run once
-in Colab and record here:
-
-- `du -sh` on the downloaded `HuggingFaceVLA/libero` dataset cache
-- wall-clock time for a cold download vs. a warm local read vs. a warm Drive read
-- verdict: local disk / Drive, and why
+**Decided: Drive**, via `HF_LEROBOT_HOME` (lerobot's real dataset-cache env
+var — see "Ninth real Colab run" below for the made-up `LEROBOT_DATASET_CACHE`
+this replaced). Forced by necessity, not a performance measurement: working
+around `HuggingFaceVLA/libero`'s stale shard-location metadata requires
+force-downloading most/all of the dataset (tens of GB) regardless of how few
+episodes are actually needed, so paying that cost once and persisting it
+beats repeating a many-GB, many-minute download every fresh Colab runtime.
+`HF_HOME` (checkpoints/configs, small) is separately on Drive too.
 
 ## Checkpoint under test
 
@@ -604,6 +604,86 @@ called once per `(suite, task_id)`, before the episode-seed loop, and the
 loop range is `min(cfg.episodes_per_task, len(demo_episodes))` with an
 explicit printed note when the dataset has fewer episodes than requested,
 instead of silently crashing later.
+
+### Ninth real Colab run: a real bug, in the dataset/library, not our code
+
+The eighth-run fix printed something that shouldn't have been possible:
+
+```
+[xgap] task 'put both the alphabet soup and the tomato sauce in the basket'
+(libero_10:0) has only 2 demo episode(s) in HuggingFaceVLA/libero
+```
+
+Checked directly against the full 1693-episode metadata (downloaded earlier
+this session, see the H3 baseline section): every one of the dataset's 40
+tasks has between 29 and 50 episodes (mean ~42); this exact task has **33**.
+"2" was not a real data characteristic — it was `dataset_io.py` silently
+under-counting. Rather than guess a fourth time, a small diagnostic script
+was run directly against the real, already-cached dataset to see what was
+actually happening at each stage:
+
+```
+ds.episodes (filter_episodes result): [8, 13, 26, 39, 69, 71, 77, 79, 92, ...]  (33 total)
+len(ds.episodes): 33
+len(ds) [total frames]: 581
+unique episode_index values actually seen on frames: [13, 26]
+```
+
+So `filter_episodes()` correctly identifies all 33 episodes at the metadata
+level — the bug is downstream, in how `LeRobotDataset` materializes their
+actual frame data.
+
+**Root cause, confirmed from lerobot's actual source, not guessed:**
+`LeRobotDatasetMetadata.get_data_file_path()`
+(`src/lerobot/datasets/dataset_metadata.py`) resolves which shard file an
+episode's data lives in via `meta/episodes/*.parquet`'s `data/chunk_index` /
+`data/file_index` columns — **the exact same columns already found to be
+stale for `HuggingFaceVLA/libero` earlier this session** (episode_index 8's
+row claims `data/chunk-000/file-000.parquet`; that file's real contents are
+only episodes 0-2 — see the "dead end" note above).
+`DatasetReader.get_episodes_file_paths()`
+(`src/lerobot/datasets/dataset_reader.py`) uses this to build the
+`allow_patterns` list for a *selective* `snapshot_download` whenever
+`LeRobotDataset` is constructed with `episode_filter`/`episodes` set — so for
+most of the 33 matched episodes, the wrong (or an incomplete) shard file gets
+fetched, and that episode's frames never materialize. Only episodes 13 and
+26 happened to end up with usable data, most likely as an accidental
+side-effect of whatever broader (also metadata-driven, also imprecise) file
+set actually got downloaded.
+
+**This is not our bug, and not fixable by changing our own filtering logic**
+— it's a real defect either in `HuggingFaceVLA/libero`'s converted metadata
+or in how lerobot's selective downloader trusts it. Per this project's own
+rule against monkey-patching `lerobot`/`libero`, the fix is isolated and
+explicit rather than patched into third-party code:
+`xgap_code/dataset_io.ensure_full_dataset_cached()` force-downloads the
+dataset's entire `data/` (and `meta/`) directory via `snapshot_download`
+*directly into the same cache directory lerobot's own downloader reads from*
+(`HF_LEROBOT_HUB_CACHE`, from `lerobot.utils.constants` — not a path we
+invent), before `LeRobotDataset` is ever constructed with a filter. Whichever
+(possibly wrong) files lerobot's own logic later asks for, they're already
+present locally, so nothing is silently missing.
+
+This surfaced a second, independent bug: `setup_colab.sh` had been exporting
+a **made-up `LEROBOT_DATASET_CACHE` variable that lerobot never reads at
+all** — it silently had zero effect since it was introduced. The real
+variable is `HF_LEROBOT_HOME` (`lerobot.utils.constants`, defaults to
+`$HF_HOME/lerobot`). Fixed, and — given the workaround above requires
+downloading most/all of the dataset (tens of GB) regardless of which few
+episodes are actually used — pointed at Drive rather than local `/content`,
+reversing the earlier "local disk for read performance" decision: paying a
+large download once and persisting it clearly beats repeating it every fresh
+Colab runtime. `configs/demo_replay_smoke.yaml`'s docstring and
+`notebooks/run_replay.ipynb` now both call out that the first real run pays
+this one-time cost.
+
+**Asked the user before proceeding** given the real time/bandwidth cost
+(chunk-000 alone ~30GB, full dataset ~50GB at the observed ~45MB/s transfer
+rate) — for a project explicitly building toward a paper, chose the full
+dataset over a partial download, since `configs/demo_replay.yaml` already
+plans to exercise `libero_spatial` (whose episodes extend into the dataset's
+second chunk) and paying the larger cost once now avoids a second forced wait
+later.
 
 ## Design constraints encoded in this codebase (do not violate)
 
