@@ -1,13 +1,26 @@
 # Pinned for reproducibility.
 #
-# lerobot resolves its own torch / mujoco / libero stack through the [libero] extra
-# (see https://github.com/huggingface/lerobot pyproject.toml -> libero = [..., "hf-libero>=0.1.4,<0.2.0; sys_platform == 'linux'"]).
+# CORRECTION (caught by an actual Colab run, not predicted in advance): the original
+# pin here was `lerobot[libero]==0.6.1`, taken from the version string in GitHub
+# main's pyproject.toml. That was wrong on two counts, confirmed via the PyPI JSON
+# API (https://pypi.org/pypi/lerobot/0.6.0/json):
+#   1. 0.6.1 was never published to PyPI -- latest released version is 0.6.0.
+#   2. More importantly, the `libero` extra does not exist AT ALL in 0.6.0's
+#      published metadata (`requires_dist` has no "libero"/"hf-libero" entries).
+#      LIBERO support only exists on the unreleased main branch. `pip install
+#      lerobot[libero]==0.6.0` would have installed lerobot fine and silently
+#      given you an env with no LIBERO integration at all -- worse than the
+#      hard failure we actually got.
+# Fix: install directly from a pinned GitHub commit instead of PyPI. Re-pin this
+# commit if you deliberately want a newer lerobot; do not float `main`.
+lerobot[libero] @ git+https://github.com/huggingface/lerobot.git@0d0737ab57f27c05d7b35fcf27e701f6003a5f3a
+# hf-libero (pulled in by the libero extra) only builds on Linux (sys_platform == 'linux'),
+# matching the Colab/GPU-server target -- it will not install on the Windows dev machine
+# this repo was authored on, by design (see README "Local environment check").
+#
 # Colab ships a CUDA-matched torch preinstalled. If `pip install` below tries to
 # upgrade/downgrade torch, do NOT let it silently succeed -- see setup_colab.sh,
 # which installs lerobot first and reports whether torch got touched.
-#
-# hf-libero only builds on Linux (sys_platform == 'linux'), matching the Colab/GPU-server target.
-lerobot[libero]==0.6.1
 
 pyyaml>=6.0,<7.0
 pandas>=2.0.0,<3.0.0

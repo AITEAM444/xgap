@@ -313,6 +313,38 @@ reported separately, not conflated:
 Scale up (`episodes_per_task`, more `task_ids`, more suites) only after the
 smoke config completes cleanly end to end.
 
+### First real Colab run, first failure (plumbing, not science)
+
+`setup_colab.sh` failed on `pip install -r requirements.txt`:
+
+```
+ERROR: Could not find a version that satisfies the requirement lerobot==0.6.1
+ERROR: No matching distribution found for lerobot==0.6.1
+```
+
+This is exactly the "API mismatch, not a science result" case described above
+— caught immediately, before any env/policy code even ran. Root cause,
+confirmed via the PyPI JSON API (`https://pypi.org/pypi/lerobot/0.6.0/json`),
+not guessed:
+
+1. `0.6.1` was never published to PyPI — the version string in
+   `requirements.txt` had been read off GitHub main's `pyproject.toml`, which
+   is an unreleased dev version. Latest actual PyPI release is `0.6.0`.
+2. More importantly: **the `libero` extra does not exist at all in `0.6.0`'s
+   published metadata** (`requires_dist` has zero `libero`/`hf-libero`
+   entries — checked directly, not assumed). LIBERO support is only on the
+   unreleased main branch. Had the version number merely been off by a patch,
+   `pip install lerobot[libero]==0.6.0` would have installed lerobot
+   successfully while silently giving an environment with **no LIBERO
+   integration at all** — a worse failure mode than the hard error we
+   actually got, since it wouldn't have announced itself.
+
+Fixed in `requirements.txt`: install directly from a pinned GitHub commit
+(`0d0737ab57f27c05d7b35fcf27e701f6003a5f3a`, main as of 2026-07-30) instead of
+PyPI, via `lerobot[libero] @ git+https://github.com/huggingface/lerobot.git@<sha>`.
+Re-pin that commit deliberately if a newer lerobot is ever wanted; do not float
+`main`.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
