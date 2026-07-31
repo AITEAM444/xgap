@@ -457,6 +457,35 @@ Fixed both, grounded in source, not guesswork:
 This one was on us, not a lerobot/libero surprise — worth naming as such
 rather than filing it next to the previous three.
 
+**Correction to the correction, immediately (sixth real Colab run):** the
+`task_index` fix above was itself wrong, caught by the very next run:
+
+```
+KeyError: 'task_index'
+```
+
+The `episode_filter` docstring's claim that per-episode rows carry a
+`task_index` field was taken at face value instead of cross-checked against
+what this session had *already independently confirmed* by downloading real
+parquet shards directly (see the H3 baseline section, and
+`outputs/demo_action_stats/`): the raw episode metadata has a `"tasks"` key
+(`list[str]`), never `"task_index"`. Reading `load_episodes()`'s actual
+implementation (`src/lerobot/datasets/io_utils.py`) confirms it: that
+function loads the raw episodes parquet and drops only `stats/*` columns —
+`"tasks"` survives untouched. The docstring is simply stale or describes a
+different code path; it should not have outranked data this session had
+already verified with its own hands. Filtering is now `ep["tasks"][0] ==
+task_name` again — the *actual* bug in the very first version (fourth Colab
+run, above) was never the key name, only the comparison value (our internal
+`task_label` instead of LIBERO's real instruction string) — `task_index` was
+an unnecessary detour introduced by trusting the wrong source.
+
+**Lesson applied going forward:** when a library's docstring and this
+project's own already-verified empirical data disagree, the empirical data
+wins — re-derive from source code (not comments/docstrings) to arbitrate, as
+was eventually done here, rather than deferring to whichever was read most
+recently.
+
 ### Fifth real Colab run, fifth failure (env var propagation, an architecture bug)
 
 The LIBERO dataset-path prompt (third failure, above) came back — but this

@@ -12,17 +12,27 @@ disk actually only contains episodes 0-2. `LeRobotDataset` resolves this
 correctly internally, so we go through it instead of re-deriving shard
 locations ourselves.
 
-CORRECTION (caught by an actual Colab run, not predicted in advance): the
-first version of `load_task_demo_episodes` filtered episodes with
-`ep.get("tasks", [None])[0] == task_name`. That crashed every real run with
-`ValueError: The episode filter did not match any episode` -- confirmed from
-lerobot's actual pinned-commit source
-(`src/lerobot/datasets/lerobot_dataset.py`, `dataset_metadata.py`), the dict
-passed to `episode_filter` is keyed by `task_index` (an int), there is no
-`"tasks"` key at all, so `.get("tasks", [None])` silently returned the default
-every time and the predicate never matched. Fixed below to resolve
-`task_name -> task_index` via `LeRobotDatasetMetadata.get_task_index()`
-(a real method, confirmed in source) and filter on `ep["task_index"]`.
+CORRECTION 1 (caught by an actual Colab run): the first version of
+`load_task_demo_episodes` filtered with `ep.get("tasks", [None])[0] ==
+task_name`, where `task_name` was accidentally our own "suite:task_id"
+bookkeeping label instead of LIBERO's natural-language instruction string --
+matched nothing, `ValueError: The episode filter did not match any episode`.
+
+CORRECTION 2 (a second Colab run, right after "fixing" correction 1): assumed
+-- from `lerobot_dataset.py`'s `episode_filter` docstring, which explicitly
+lists `task_index` as an available field -- that the right key was
+`task_index`, and changed the filter to `ep["task_index"]`. That crashed with
+`KeyError: 'task_index'`. The docstring is simply wrong here (or describes a
+different code path): `load_episodes()` in
+`src/lerobot/datasets/io_utils.py` loads the raw episodes parquet and drops
+only `stats/*` columns -- `"tasks"` (a `list[str]`, one entry per episode)
+survives untouched into the dict `episode_filter` sees. This matches what was
+already independently confirmed by downloading real parquet shards directly
+this session (see outputs/demo_action_stats/) -- that source should have been
+trusted over the docstring from the start. Filtering below is back to
+`ep["tasks"][0]`, this time compared against the correct value (the actual
+LIBERO instruction string, via `harness.get_libero_task_language`) rather than
+our internal label.
 """
 
 from __future__ import annotations
@@ -74,7 +84,7 @@ def load_task_demo_episodes(
     # harness.make_real_libero_env's docstring for how to treat it (high replay success is
     # supporting evidence; low success with control_mode/init_states both otherwise correct
     # points back at this mapping).
-    ds = LeRobotDataset(repo_id, episode_filter=lambda ep: ep["task_index"] == task_index)
+    ds = LeRobotDataset(repo_id, episode_filter=lambda ep: ep["tasks"][0] == task_name)
     episode_indices = sorted(ds.episodes) if ds.episodes else []
     if max_episodes is not None:
         episode_indices = episode_indices[:max_episodes]
