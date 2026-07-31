@@ -1,0 +1,64 @@
+# Step 2: demo replay harness. This is the answer key for env/init-state/success-detection
+# correctness -- no policy is involved. See README "Step 1 findings" and "2단계" plan.
+
+experiment_name: demo_replay_v1
+
+# Local disk staging (fast, per-episode writes land here immediately).
+local_output_root: outputs/demo_replay_v1/_local
+# Drive-mounted persistent store; resume checks THIS, since local disk does not
+# survive a Colab session restart. Set to a real Drive path before running in Colab,
+# e.g. /content/drive/MyDrive/xgap/outputs/demo_replay_v1
+remote_output_root: null
+
+dataset_repo_id: HuggingFaceVLA/libero
+
+# At least one of libero_object / libero_spatial is required (per project instructions) since
+# the checkpoint's model card does not state which suite(s) it was trained on. Task-name
+# inspection this session (meta/tasks.parquet, 40 tasks total) strongly suggests the
+# checkpoint's training data spans all 4 standard suites (task names split cleanly into
+# 4 blocks of 10 matching libero_10/goal/object/spatial) -- libero_goal is left out here only
+# to keep the first Colab run small; add it once this config has been run once successfully.
+task_suites:
+  - libero_10
+  - libero_object
+  - libero_spatial
+
+# Explicit task_ids per suite. null/omitted = all tasks in that suite. Kept small
+# (2 tasks/suite) for the first run -- widen once the harness is confirmed working.
+task_ids:
+  libero_10: [0, 1]
+  libero_object: [0, 1]
+  libero_spatial: [0, 1]
+
+episodes_per_task: 3
+
+# Dual-run per user decision: both executed, higher-success one becomes the confirmed
+# demo/env convention. NOT a sweep axis (H4 stays in step 4's policy sweep).
+control_modes:
+  - relative
+  - absolute
+
+# Matches HuggingFaceVLA/libero's recorded fps (meta/info.json: fps=10.0), NOT lerobot's
+# LiberoEnv/EnvConfig default of 20. See config.py comment -- a 10 vs 20 Hz mismatch would
+# apply every delta action at 2x the intended rate. Log this value in every episode row so it's
+# checkable after the fact.
+control_freq: 10
+
+init_states: true  # must stay true for replay -- see config.py validation
+
+# Project-wide invariants -- unused by replay (no candidate branching without a policy)
+# but present now so later conditions (Oracle/World-model/Random) share this config shape.
+n_decision_points: 1
+exec_horizon: 1
+selection_unit: chunk
+
+parallel_envs: auto
+parallel_envs_cap: 8
+sync_every_n_episodes: 5
+
+checkpoint_name: N/A_demo_replay
+checkpoint_hash: N/A_demo_replay
+git_commit: unknown  # overwritten at runtime by `git rev-parse HEAD`
+
+random_seed: 0
+resume: true

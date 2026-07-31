@@ -1,0 +1,25 @@
+# Experiment outputs (episodes, videos, logs) -- large, regenerable, not source
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.ipynb_checkpoints/
+
+# Caches / checkpoints / datasets (kept on Drive or local disk, never in git)
+.hf_cache/
+.torch_cache/
+data/
+checkpoints/
+*.safetensors
+*.ckpt
+
+# Env
+venv/
+.venv/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
