@@ -3,6 +3,10 @@
 Week-1 scope: **decide whether SmolVLA behaves correctly on LIBERO**, before any
 world-model or best-of-N work starts. No fixing — this repo diagnoses.
 
+Repo: https://github.com/AITEAM444/xgap (public — the code/configs here are
+diagnostic tooling, no secrets or sensitive data; checkpoints/datasets/outputs
+stay out of git via `.gitignore` and live on Drive/HF cache instead).
+
 ## Layout
 
 ```
@@ -20,7 +24,18 @@ xgap/
 
 ## Setup
 
+In Colab: open `notebooks/run_replay.ipynb` from GitHub (or clone by hand,
+see below) and run its cells top to bottom -- it mounts Drive, clones/pulls
+this repo into Drive, then runs `setup_colab.sh`. After the first clone,
+picking up code changes is `git -C /content/drive/MyDrive/xgap pull` (the
+notebook's clone/pull cell does this automatically every run); there is no
+more manual re-uploading of files to Drive.
+
+Manual/local:
+
 ```bash
+git clone https://github.com/AITEAM444/xgap.git
+cd xgap
 bash setup_colab.sh
 ```
 
