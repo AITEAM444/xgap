@@ -45,14 +45,21 @@ script (Colab's `!` subshell env does not propagate into the kernel process).
 
 ### Dataset cache decision
 
-**Decided: Drive**, via `HF_LEROBOT_HOME` (lerobot's real dataset-cache env
-var — see "Ninth real Colab run" below for the made-up `LEROBOT_DATASET_CACHE`
-this replaced). Forced by necessity, not a performance measurement: working
-around `HuggingFaceVLA/libero`'s stale shard-location metadata requires
-force-downloading most/all of the dataset (tens of GB) regardless of how few
-episodes are actually needed, so paying that cost once and persisting it
-beats repeating a many-GB, many-minute download every fresh Colab runtime.
-`HF_HOME` (checkpoints/configs, small) is separately on Drive too.
+**Decided: local disk (`/content`), not Drive** — via `HF_LEROBOT_HOME`
+(lerobot's real dataset-cache env var; see "Ninth real Colab run" below for
+the made-up `LEROBOT_DATASET_CACHE` this replaced). Briefly tried Drive
+first, reasoning that the large one-time download needed to work around
+`HuggingFaceVLA/libero`'s stale shard-location metadata (tens of GB) should
+be persisted rather than repeated every session — but that download died
+silently mid-transfer with no traceback and no user-initiated interrupt,
+consistent with Colab's Drive FUSE mount being unreliable for sustained large
+writes. Reverted to local disk: reliable completion matters more than
+avoiding a repeat download, until there's a tested plan for syncing the
+finished cache to Drive as one bulk copy afterward (not streaming the
+download directly onto the Drive mount). Re-downloading tens of GB every
+fresh Colab session is an accepted, known cost for now. `HF_HOME`
+(checkpoints/configs, small) stays on Drive — that's a much smaller, more
+FUSE-tolerant amount of data.
 
 ## Checkpoint under test
 
@@ -684,6 +691,22 @@ dataset over a partial download, since `configs/demo_replay.yaml` already
 plans to exercise `libero_spatial` (whose episodes extend into the dataset's
 second chunk) and paying the larger cost once now avoids a second forced wait
 later.
+
+### Tenth real Colab run: the Drive-cache decision above didn't survive contact
+
+The full-dataset download (now targeting Drive, per the decision above) died
+silently partway through — no Python traceback, no `KeyboardInterrupt`, and
+the user confirmed they hadn't pressed anything. A process dying with no
+traceback at all (not even an interrupt handler running) points at something
+outside Python killing it, not a normal exception. The leading suspect:
+Colab's Drive FUSE mount is well known to be unreliable for sustained large
+writes (tens of GB), separate from anything in our own code. Reverted
+`HF_LEROBOT_HOME` to local disk (`/content/xgap_hf_lerobot_cache`) — see the
+"Dataset cache decision" section above, now updated to match. Repeating the
+large download every fresh session is an accepted cost until there's a
+tested plan for a post-download bulk sync to Drive (copying already-complete
+local files over, rather than streaming the download directly onto the FUSE
+mount).
 
 ## Design constraints encoded in this codebase (do not violate)
 

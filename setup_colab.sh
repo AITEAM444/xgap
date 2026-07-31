@@ -47,16 +47,22 @@ XGAP_DRIVE_ROOT="${XGAP_DRIVE_ROOT:-/content/drive/MyDrive/xgap}"
 export HF_HOME="${HF_HOME:-${XGAP_DRIVE_ROOT}/.hf_cache}"
 
 # HF_LEROBOT_HOME: lerobot's ACTUAL dataset cache dir (from lerobot.utils.constants;
-# defaults to $HF_HOME/lerobot if unset). CORRECTION: an earlier version of this script
+# defaults to $HF_HOME/lerobot if unset). CORRECTION 1: an earlier version of this script
 # exported a made-up `LEROBOT_DATASET_CACHE` variable that lerobot never reads at all --
-# it silently had zero effect. Set to Drive, not local /content: working around
-# HuggingFaceVLA/libero's stale shard-location metadata (see xgap_code/dataset_io.py
-# "CORRECTION 4") requires force-downloading most/all of the dataset (tens of GB) up
-# front regardless of which few episodes are actually used -- paying that cost once and
-# persisting it on Drive clearly beats repeating a many-GB, many-minute download on every
-# fresh Colab runtime. (Original plan was local disk for read-performance during training
-# loops; that consideration is secondary now that a large upfront download is unavoidable.)
-export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-${XGAP_DRIVE_ROOT}/.hf_lerobot_cache}"
+# it silently had zero effect.
+#
+# CORRECTION 2 (caught by an actual Colab run): briefly pointed this at Drive, reasoning
+# that a large one-time download (see xgap_code/dataset_io.py "CORRECTION 4" -- working
+# around HuggingFaceVLA/libero's stale shard-location metadata requires force-downloading
+# most/all of the dataset) should be persisted rather than repeated every session. That
+# run's download process died silently mid-transfer -- no traceback, no user-initiated
+# interrupt -- consistent with Colab's Drive FUSE mount, which is known to be unreliable
+# for sustained large writes (tens of GB), not a real ^C. Reverted to LOCAL disk: reliable
+# completion matters more than avoiding a repeat download until there's a specific,
+# tested plan for syncing the finished cache to Drive as one bulk copy afterward (not
+# streaming the download directly onto the Drive mount). Re-downloading tens of GB every
+# fresh Colab session is an accepted, known cost for now -- see README.
+export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-/content/xgap_hf_lerobot_cache}"
 
 # LIBERO_CONFIG_PATH: where the `libero` package's own config.yaml (dataset/bddl/assets
 # paths) lives. Kept LOCAL, not Drive: its contents are computed from THIS session's
