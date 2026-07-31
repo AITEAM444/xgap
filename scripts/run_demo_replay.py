@@ -78,6 +78,7 @@ def _write_decision(store: EpisodeStore, decision: dict) -> None:
 def _run_one_episode(
     cfg: DemoReplayConfig, config_file: str, mock: bool, git_commit: str,
     suite: str, task_id, task_label: str, episode_seed: int, control_mode: str,
+    demo_episodes,
 ):
     condition = f"demo_replay_{control_mode}"
     if mock:
@@ -91,17 +92,8 @@ def _run_one_episode(
             control_mode=control_mode,
             control_freq=cfg.control_freq,
         )
-        from xgap_code.dataset_io import load_task_demo_episodes
-
-        # task_label ("suite:task_id", e.g. "libero_10:0") is OUR bookkeeping key, not
-        # what the dataset's episode metadata is keyed by -- that needs LIBERO's own
-        # natural-language task instruction. Conflating the two is exactly the bug that
-        # produced "episode filter did not match any episode" on an actual Colab run
-        # (see dataset_io.py's module docstring).
-        task_language = get_libero_task_language(suite, task_id)
-        demo_episodes = load_task_demo_episodes(
-            cfg.dataset_repo_id, task_name=task_language, max_episodes=cfg.episodes_per_task
-        )
+        # demo_episodes is precomputed once per (suite, task_id) by the caller -- see
+        # run()'s comment on why this used to be (wastefully, and buggily) recomputed here.
         demo_actions = demo_episodes[episode_seed].actions
 
     record = replay_episode(
@@ -140,7 +132,34 @@ def run(cfg: DemoReplayConfig, config_file: str, mock: bool) -> dict:
         task_ids = (cfg.task_ids or {}).get(suite) or [0]
         for task_id in task_ids:
             task_label = f"{suite}:{task_id}"
-            for episode_seed in range(cfg.episodes_per_task):
+
+            # Load once per (suite, task_id), not once per (episode_seed, control_mode) --
+            # the latter both re-filtered/re-fetched the dataset redundantly AND crashed with
+            # IndexError on an actual Colab run: cfg.episodes_per_task is a REQUEST, not a
+            # guarantee -- a task can have fewer demo episodes in the dataset than requested,
+            # and demo_episodes[episode_seed] doesn't know that until it's out of range.
+            demo_episodes = None
+            n_episodes_this_task = cfg.episodes_per_task
+            if not mock:
+                from xgap_code.dataset_io import load_task_demo_episodes
+
+                # task_label ("suite:task_id", e.g. "libero_10:0") is OUR bookkeeping key, not
+                # what the dataset's episode metadata is keyed by -- see dataset_io.py's
+                # module docstring for the Colab run this distinction was caught on.
+                task_language = get_libero_task_language(suite, task_id)
+                demo_episodes = load_task_demo_episodes(
+                    cfg.dataset_repo_id, task_name=task_language, max_episodes=cfg.episodes_per_task
+                )
+                n_episodes_this_task = len(demo_episodes)
+                if n_episodes_this_task < cfg.episodes_per_task:
+                    print(
+                        f"[xgap] task '{task_language}' ({task_label}) has only "
+                        f"{n_episodes_this_task} demo episode(s) in {cfg.dataset_repo_id}, "
+                        f"fewer than episodes_per_task={cfg.episodes_per_task}. "
+                        f"Using {n_episodes_this_task}."
+                    )
+
+            for episode_seed in range(n_episodes_this_task):
                 for control_mode in cfg.control_modes:
                     key = episode_key(f"demo_replay_{control_mode}", suite, task_label, episode_seed)
 
@@ -154,6 +173,7 @@ def run(cfg: DemoReplayConfig, config_file: str, mock: bool) -> dict:
                     record = _run_one_episode(
                         cfg, config_file, mock, git_commit,
                         suite, task_id, task_label, episode_seed, control_mode,
+                        demo_episodes,
                     )
                     store.write_episode(key, record)
                     all_rows.append(record.to_row())

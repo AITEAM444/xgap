@@ -554,6 +554,57 @@ unconfirmed accessor) against this session's own already-verified ground
 truth before shipping it, rather than patching forward on unconfirmed
 assumptions between Colab round-trips.
 
+### First successful end-to-end run
+
+After the seventh fix, `configs/demo_replay_smoke.yaml` (1 task, 1 episode,
+both `control_mode`s) completed with no traceback:
+
+```json
+{
+  "decision": "both_low_suspect_init_state",
+  "mode_summary": {
+    "relative": {"n_episodes": 1, "success_rate": 0.0},
+    "absolute": {"n_episodes": 1, "success_rate": 0.0}
+  }
+}
+```
+
+This is the first real result, not a plumbing failure — but `n=1` per
+`control_mode` is too small to act on (a single episode failing doesn't
+distinguish "genuinely both broken" from "unlucky draw"). Two things were
+fixed/changed in response, not to the finding itself, just to get a
+trustworthy enough sample to interpret it:
+
+- Both configs had `remote_output_root: null` — this run's results only ever
+  landed on ephemeral `/content` disk and would not have survived a session
+  restart. Pointed both at real Drive paths.
+- `demo_replay_smoke.yaml`'s `episodes_per_task` raised `1 -> 5`.
+
+### Eighth real Colab run, eighth failure (another regression, same root cause pattern)
+
+Right after bumping `episodes_per_task`, the next run crashed:
+
+```
+IndexError: list index out of range
+  demo_actions = demo_episodes[episode_seed].actions
+```
+
+Root cause: `_run_one_episode` called `load_task_demo_episodes(...,
+max_episodes=cfg.episodes_per_task)` fresh for *every single*
+`(episode_seed, control_mode)` pair, and treated `cfg.episodes_per_task` as a
+guarantee of how many episodes would come back, not a request — if a task
+happens to have fewer demo episodes in the dataset than `episodes_per_task`
+asks for, `demo_episodes[episode_seed]` goes out of range for the later
+seeds. (This was also simply wasteful regardless of the bug: re-filtering and
+re-fetching the same task's episodes on every one of `episodes_per_task *
+len(control_modes)` calls instead of once.)
+
+Fixed in `scripts/run_demo_replay.py`: `load_task_demo_episodes` is now
+called once per `(suite, task_id)`, before the episode-seed loop, and the
+loop range is `min(cfg.episodes_per_task, len(demo_episodes))` with an
+explicit printed note when the dataset has fewer episodes than requested,
+instead of silently crashing later.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
