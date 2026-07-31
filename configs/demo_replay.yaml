@@ -6,9 +6,8 @@ experiment_name: demo_replay_v1
 # Local disk staging (fast, per-episode writes land here immediately).
 local_output_root: outputs/demo_replay_v1/_local
 # Drive-mounted persistent store; resume checks THIS, since local disk does not
-# survive a Colab session restart. Set to a real Drive path before running in Colab,
-# e.g. /content/drive/MyDrive/xgap/outputs/demo_replay_v1
-remote_output_root: null
+# survive a Colab session restart.
+remote_output_root: /content/drive/MyDrive/xgap/outputs/demo_replay_v1
 
 dataset_repo_id: HuggingFaceVLA/libero
 

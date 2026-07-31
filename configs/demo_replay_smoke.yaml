@@ -10,8 +10,10 @@
 experiment_name: demo_replay_smoke
 
 local_output_root: outputs/demo_replay_smoke/_local
-remote_output_root: null  # set to a Drive path once running in Colab, e.g.
-                          # /content/drive/MyDrive/xgap/outputs/demo_replay_smoke
+# Drive path -- the harness completed a real end-to-end run with this null (local-only),
+# which means nothing from that run persists past this Colab session. Set now that the
+# harness is confirmed working.
+remote_output_root: /content/drive/MyDrive/xgap/outputs/demo_replay_smoke
 
 dataset_repo_id: HuggingFaceVLA/libero
 
@@ -21,7 +23,11 @@ task_suites:
 task_ids:
   libero_10: [0]
 
-episodes_per_task: 1
+# Bumped from 1 -> 5 after the harness completed a real end-to-end run (no crash,
+# a decision was printed). n=1 per control_mode is too small to trust "both low" --
+# see README "How to read the first real run": what matters is the gap between
+# relative/absolute, not either single episode's outcome.
+episodes_per_task: 5
 
 control_modes:
   - relative
