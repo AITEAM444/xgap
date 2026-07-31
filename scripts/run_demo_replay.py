@@ -27,7 +27,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from xgap_code.config import DemoReplayConfig  # noqa: E402
-from xgap_code.harness import MockLiberoEnv, make_real_libero_env  # noqa: E402
+from xgap_code.harness import MockLiberoEnv, get_libero_task_language, make_real_libero_env  # noqa: E402
 from xgap_code.logging_schema import EpisodeStore, episode_key  # noqa: E402
 from xgap_code.replay import (  # noqa: E402
     decide_env_convention,
@@ -93,8 +93,14 @@ def _run_one_episode(
         )
         from xgap_code.dataset_io import load_task_demo_episodes
 
+        # task_label ("suite:task_id", e.g. "libero_10:0") is OUR bookkeeping key, not
+        # what the dataset's episode metadata is keyed by -- that needs LIBERO's own
+        # natural-language task instruction. Conflating the two is exactly the bug that
+        # produced "episode filter did not match any episode" on an actual Colab run
+        # (see dataset_io.py's module docstring).
+        task_language = get_libero_task_language(suite, task_id)
         demo_episodes = load_task_demo_episodes(
-            cfg.dataset_repo_id, task_name=task_label, max_episodes=cfg.episodes_per_task
+            cfg.dataset_repo_id, task_name=task_language, max_episodes=cfg.episodes_per_task
         )
         demo_actions = demo_episodes[episode_seed].actions
 

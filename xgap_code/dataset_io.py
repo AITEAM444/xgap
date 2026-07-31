@@ -1,25 +1,28 @@
 """Read demo action/state sequences from a LeRobot-format HF dataset
 (HuggingFaceVLA/libero by default) for a specific task.
 
-Uses lerobot's own `LeRobotDataset` (lazy import) rather than hand-rolling
-parquet-shard discovery. This was a deliberate reversal during development:
-an earlier version of this module tried to resolve episode -> shard-file
-location directly from `meta/episodes/*.parquet` (`data/chunk_index`,
-`data/file_index` columns). That metadata turned out to be STALE for
-HuggingFaceVLA/libero as currently hosted -- e.g. it claims episodes 0-14 all
-live in `data/chunk-000/file-000.parquet`, but that file on disk actually only
-contains episodes 0-2. Trusting it would have silently loaded the wrong
-episodes. `LeRobotDataset` resolves this correctly internally, so we go
-through it instead of re-deriving shard locations ourselves.
+Uses lerobot's own `LeRobotDataset` / `LeRobotDatasetMetadata` (lazy import)
+rather than hand-rolling parquet-shard discovery. This was a deliberate
+reversal during development: an earlier version of this module tried to
+resolve episode -> shard-file location directly from `meta/episodes/*.parquet`
+(`data/chunk_index`, `data/file_index` columns). That metadata turned out to
+be STALE for HuggingFaceVLA/libero as currently hosted -- e.g. it claims
+episodes 0-14 all live in `data/chunk-000/file-000.parquet`, but that file on
+disk actually only contains episodes 0-2. `LeRobotDataset` resolves this
+correctly internally, so we go through it instead of re-deriving shard
+locations ourselves.
 
-CAVEAT: the exact attribute names below (`dataset.meta.episodes`,
-`episode_filter`, `dataset.hf_dataset`) were confirmed against lerobot's
-`main` branch source at the time of writing, but were not runnable in this
-session (no lerobot installed locally -- see README "Local environment
-check"). Re-verify against the actually-installed version before trusting
-this path in Colab; if names drifted, the ad hoc raw-parquet analysis in
-`scripts/analyze_demo_actions.py`'s fallback mode (`--no-lerobot`) is the
-already-verified escape hatch used to produce this session's H3 baseline.
+CORRECTION (caught by an actual Colab run, not predicted in advance): the
+first version of `load_task_demo_episodes` filtered episodes with
+`ep.get("tasks", [None])[0] == task_name`. That crashed every real run with
+`ValueError: The episode filter did not match any episode` -- confirmed from
+lerobot's actual pinned-commit source
+(`src/lerobot/datasets/lerobot_dataset.py`, `dataset_metadata.py`), the dict
+passed to `episode_filter` is keyed by `task_index` (an int), there is no
+`"tasks"` key at all, so `.get("tasks", [None])` silently returned the default
+every time and the predicate never matched. Fixed below to resolve
+`task_name -> task_index` via `LeRobotDatasetMetadata.get_task_index()`
+(a real method, confirmed in source) and filter on `ep["task_index"]`.
 """
 
 from __future__ import annotations
@@ -39,26 +42,58 @@ class DemoEpisode:
     states: np.ndarray  # (T, 8) float32
 
 
+def _to_numpy(x) -> np.ndarray:
+    return x.numpy() if hasattr(x, "numpy") else np.asarray(x)
+
+
+def _to_scalar(x) -> int:
+    return int(x.item() if hasattr(x, "item") else x)
+
+
 def load_task_demo_episodes(
     repo_id: str, task_name: str, max_episodes: int | None = None
 ) -> list[DemoEpisode]:
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset  # lazy import, see module docstring
+    from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    ds = LeRobotDataset(repo_id, episode_filter=lambda ep: ep.get("tasks", [None])[0] == task_name)
-    task_indices = sorted(ds.meta.episodes["episode_index"].tolist())
-    # NOTE: within_task_index assumes dataset (episode_index) order matches LIBERO's own
-    # init-state ordering for this task. Not verified -- see harness.make_real_libero_env docstring.
+    # Metadata-only load (just the meta/ dir -- info.json, tasks.parquet, episodes/*.parquet;
+    # no frame or video data) purely to resolve the natural-language task string to this
+    # dataset's task_index.
+    meta = LeRobotDatasetMetadata(repo_id)
+    task_index = meta.get_task_index(task_name)
+    if task_index is None:
+        available = list(meta.tasks.index) if meta.tasks is not None else []
+        raise ValueError(
+            f"Task '{task_name}' not found in dataset '{repo_id}'. "
+            f"First few available tasks: {available[:5]}"
+        )
+
+    # filter_episodes() (dataset_metadata.py) returns episode indices in SORTED order.
+    # within_task_index below assumes that sorted dataset-global order matches LIBERO's own
+    # init-state collection order for this task -- an assumption, not a fact; see
+    # harness.make_real_libero_env's docstring for how to treat it (high replay success is
+    # supporting evidence; low success with control_mode/init_states both otherwise correct
+    # points back at this mapping).
+    ds = LeRobotDataset(repo_id, episode_filter=lambda ep: ep["task_index"] == task_index)
+    episode_indices = sorted(ds.episodes) if ds.episodes else []
+    if max_episodes is not None:
+        episode_indices = episode_indices[:max_episodes]
+
+    frames_by_episode: dict[int, list[dict]] = {ep: [] for ep in episode_indices}
+    for i in range(len(ds)):
+        frame = ds[i]
+        ep_idx = _to_scalar(frame["episode_index"])
+        if ep_idx in frames_by_episode:
+            frames_by_episode[ep_idx].append(frame)
+
     episodes: list[DemoEpisode] = []
-    for within_idx, ep_idx in enumerate(task_indices):
-        if max_episodes is not None and within_idx >= max_episodes:
-            break
-        ep_frames = ds.hf_dataset.filter(lambda row: row["episode_index"] == ep_idx)
-        actions = np.stack([np.asarray(a, dtype=np.float32) for a in ep_frames["action"]])
-        states = np.stack([np.asarray(s, dtype=np.float32) for s in ep_frames["observation.state"]])
-        task_index = int(ep_frames["task_index"][0])
+    for within_idx, ep_idx in enumerate(episode_indices):
+        frames = sorted(frames_by_episode[ep_idx], key=lambda f: _to_scalar(f["frame_index"]))
+        actions = np.stack([_to_numpy(f["action"]) for f in frames]).astype(np.float32)
+        states = np.stack([_to_numpy(f["observation.state"]) for f in frames]).astype(np.float32)
         episodes.append(
             DemoEpisode(
-                episode_index=int(ep_idx),
+                episode_index=ep_idx,
                 task_index=task_index,
                 task_name=task_name,
                 within_task_index=within_idx,

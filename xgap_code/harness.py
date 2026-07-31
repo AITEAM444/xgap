@@ -9,8 +9,38 @@ source; see README "Step 1 findings").
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
+
+
+@lru_cache(maxsize=None)
+def _get_benchmark_suite(task_suite_name: str):
+    """Lazy, memoized LIBERO suite lookup -- shared by make_real_libero_env and
+    get_libero_task_language so a (suite, task_id) pair used repeatedly across
+    episodes doesn't reconstruct the suite object every time."""
+    from libero.libero import benchmark
+
+    bench = benchmark.get_benchmark_dict()
+    if task_suite_name not in bench:
+        raise ValueError(f"Unknown LIBERO suite '{task_suite_name}'. Available: {sorted(bench.keys())}")
+    return bench[task_suite_name]()
+
+
+def get_libero_task_language(task_suite_name: str, task_id: int) -> str:
+    """Return the natural-language task instruction LIBERO itself associates with
+    (task_suite_name, task_id) -- e.g. "put the bowl on the plate".
+
+    This is the exact string HuggingFaceVLA/libero's episode metadata stores per
+    episode (`LeRobotDatasetMetadata.get_task_index()` looks up episodes by this
+    string) -- it is NOT our own internal "suite:task_id" bookkeeping label (see
+    run_demo_replay.py's `task_label`). Passing the wrong one of these two to
+    `dataset_io.load_task_demo_episodes` is exactly the bug that produced
+    `ValueError: The episode filter did not match any episode` on an actual
+    Colab run -- see dataset_io.py's module docstring.
+    """
+    suite = _get_benchmark_suite(task_suite_name)
+    return suite.get_task(task_id).language
 
 
 def make_real_libero_env(
@@ -38,13 +68,9 @@ def make_real_libero_env(
     Imports lerobot/libero lazily so this module -- and MockLiberoEnv below --
     can be imported and unit-tested without either installed.
     """
-    from libero.libero import benchmark
     from lerobot.envs.libero import LiberoEnv
 
-    bench = benchmark.get_benchmark_dict()
-    if task_suite_name not in bench:
-        raise ValueError(f"Unknown LIBERO suite '{task_suite_name}'. Available: {sorted(bench.keys())}")
-    suite = bench[task_suite_name]()
+    suite = _get_benchmark_suite(task_suite_name)
 
     return LiberoEnv(
         task_suite=suite,

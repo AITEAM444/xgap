@@ -414,6 +414,49 @@ itself). `LIBERO_CONFIG_PATH` is set to local disk (`/content/xgap_libero_config
 not Drive, since the paths it contains are only valid for the current
 session's site-packages layout.
 
+### Fourth real Colab run, fourth failure (our bug, in the real-data path)
+
+Setup and the LIBERO env import both passed this time — the actual demo
+replay logic ran and crashed:
+
+```
+ds = LeRobotDataset(repo_id, episode_filter=lambda ep: ep.get("tasks", [None])[0] == task_name)
+ValueError: The episode filter did not match any episode. Make sure the
+filter and episodes list are valid and compatible.
+```
+
+Root cause, confirmed by reading lerobot's actual pinned-commit source
+(`src/lerobot/datasets/lerobot_dataset.py`, `dataset_metadata.py`) rather than
+guessing again: `episode_filter` is evaluated against a per-episode metadata
+dict keyed by `task_index` (an int) — fields are `task_index`, `episode_index`,
+`length`, `from_timestamp`, `to_timestamp`. There is no `"tasks"` key at all.
+`dataset_io.py`'s original `ep.get("tasks", [None])[0] == task_name` therefore
+always fell through to the `.get()` default and never matched anything,
+guaranteed to fail on every real run regardless of what `task_name` was.
+
+A second, related bug in the caller: `run_demo_replay.py` was passing our own
+internal bookkeeping label (`task_label`, e.g. `"libero_10:0"`) as `task_name`
+— but the dataset's episodes are keyed by LIBERO's actual natural-language
+task instruction (e.g. `"put the bowl on the plate"`). Even with the
+`task_index` fix, the wrong string would still have matched nothing.
+
+Fixed both, grounded in source, not guesswork:
+
+- `dataset_io.load_task_demo_episodes` now resolves `task_name -> task_index`
+  via `LeRobotDatasetMetadata.get_task_index()` (a real method, read from
+  source), then filters on `ep["task_index"]`. It also now reads frames
+  directly off the filtered `LeRobotDataset` (`ds[i]["action"]` /
+  `ds[i]["observation.state"]`, torch tensors converted to numpy) instead of a
+  second `hf_dataset.filter()` call that assumed HF `datasets` API shapes we
+  hadn't confirmed either.
+- `harness.get_libero_task_language(suite, task_id)` (new) returns
+  `task_suite.get_task(task_id).language` — LIBERO's own instruction string —
+  and `run_demo_replay.py` now passes *that* to `load_task_demo_episodes`,
+  keeping `task_label` for our own logging only.
+
+This one was on us, not a lerobot/libero surprise — worth naming as such
+rather than filing it next to the previous three.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
