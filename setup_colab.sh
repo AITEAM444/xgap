@@ -41,12 +41,21 @@ export HF_HOME="${HF_HOME:-${XGAP_DRIVE_ROOT}/.hf_cache}"
 #   README.md before changing this default.
 export LEROBOT_DATASET_CACHE="${LEROBOT_DATASET_CACHE:-/content/xgap_dataset_cache}"
 
+# LIBERO_CONFIG_PATH: where the `libero` package's own config.yaml (dataset/bddl/assets
+# paths) lives. Kept LOCAL, not Drive: its contents are computed from THIS session's
+# site-packages install location (see step 3 below), which is not guaranteed stable
+# across Colab image updates -- persisting a stale copy on Drive could silently point
+# at a path that doesn't exist in a future session. Regenerating it locally every
+# session is cheap and always correct for that session.
+export LIBERO_CONFIG_PATH="${LIBERO_CONFIG_PATH:-/content/xgap_libero_config}"
+
 mkdir -p "${HF_HOME}" "${LEROBOT_DATASET_CACHE}"
 mkdir -p "${XGAP_DRIVE_ROOT}/outputs" "${XGAP_DRIVE_ROOT}/logs"
 
 echo "[xgap setup] XGAP_DRIVE_ROOT=${XGAP_DRIVE_ROOT}"
 echo "[xgap setup] HF_HOME=${HF_HOME}"
 echo "[xgap setup] LEROBOT_DATASET_CACHE=${LEROBOT_DATASET_CACHE}"
+echo "[xgap setup] LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH}"
 
 # ---------------------------------------------------------------------------
 # 1. Detect state BEFORE touching anything (for the restart-required banner
@@ -71,14 +80,58 @@ if [ "${TORCH_VER_BEFORE}" != "${TORCH_VER_AFTER}" ]; then
   echo "!! WARNING: torch changed during install: ${TORCH_VER_BEFORE} -> ${TORCH_VER_AFTER}"
   echo "!! This can desync Colab's preinstalled CUDA runtime from torch's expectations."
   echo "!! If GPU code breaks after this, consider:"
-  echo "!!   pip install --no-deps 'lerobot[libero]==0.6.1'"
+  echo "!!   pip install --no-deps 'lerobot[libero] @ git+https://github.com/huggingface/lerobot.git@0d0737ab57f27c05d7b35fcf27e701f6003a5f3a'"
   echo "!! and manually installing any missing libero/hf-libero deps."
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo ""
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Verify the LIBERO integration actually imports (fail loudly, not silently).
+# 3. Pre-seed the `libero` package's own config.yaml, non-interactively.
+#
+# libero/libero/__init__.py (part of the `hf-libero` dependency the [libero] extra
+# installs) runs `input("Do you want to specify a custom path for the dataset
+# folder? (Y/N): ")` the first time it's imported, IF its config file doesn't exist
+# yet. There is no env var or flag to suppress this -- it's gated purely on
+# `if not os.path.exists(config_file)`. In any non-interactive context (this script,
+# a Colab cell run via subprocess, CI) that `input()` hits EOF and crashes:
+#   EOFError: EOF when reading a line
+# Fix: write that config file ourselves, before anything imports `libero.libero`,
+# using the exact same default-path logic the package itself would use. We only
+# import the OUTER `libero` package below (confirmed empty __init__.py in the
+# huggingface/lerobot-libero fork) -- never `libero.libero`, which is what actually
+# contains the prompt.
+# ---------------------------------------------------------------------------
+python3 - <<'PYEOF'
+import os
+import yaml
+
+libero_config_path = os.environ.get("LIBERO_CONFIG_PATH", os.path.expanduser("~/.libero"))
+config_file = os.path.join(libero_config_path, "config.yaml")
+os.makedirs(libero_config_path, exist_ok=True)
+
+if os.path.exists(config_file):
+    print(f"[xgap setup] LIBERO config already exists at {config_file}, leaving as-is")
+else:
+    import libero  # outer package only -- does not execute libero/libero/__init__.py
+
+    benchmark_root = os.path.join(os.path.dirname(os.path.abspath(libero.__file__)), "libero")
+    default_path_dict = {
+        "benchmark_root": benchmark_root,
+        "bddl_files": os.path.join(benchmark_root, "bddl_files"),
+        "init_states": os.path.join(benchmark_root, "init_files"),
+        "datasets": os.path.join(benchmark_root, "..", "datasets"),
+        "assets": os.path.join(benchmark_root, "assets"),
+    }
+    with open(config_file, "w") as f:
+        yaml.dump(default_path_dict, f)
+    print(f"[xgap setup] Pre-seeded LIBERO config at {config_file} (skips its interactive prompt):")
+    for key, value in default_path_dict.items():
+        print(f"  {key}: {value}")
+PYEOF
+
+# ---------------------------------------------------------------------------
+# 4. Verify the LIBERO integration actually imports (fail loudly, not silently).
 # ---------------------------------------------------------------------------
 python3 - <<'PYEOF'
 import os
@@ -89,7 +142,7 @@ print("[xgap setup] lerobot LIBERO integration import OK")
 PYEOF
 
 # ---------------------------------------------------------------------------
-# 4. Restart banner: only needed the first time lerobot goes from absent -> present,
+# 5. Restart banner: only needed the first time lerobot goes from absent -> present,
 #    since Colab sometimes has stale compiled extensions / mujoco-py caches in the
 #    running kernel process.
 # ---------------------------------------------------------------------------
@@ -105,7 +158,7 @@ if [ "${LEROBOT_WAS_INSTALLED}" = "no" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Hardware / library metadata log -- Colab hardware varies session to session,
+# 6. Hardware / library metadata log -- Colab hardware varies session to session,
 #    so every run appends a timestamped snapshot instead of overwriting.
 # ---------------------------------------------------------------------------
 META_LOG="${XGAP_DRIVE_ROOT}/logs/env_meta.log"

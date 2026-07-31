@@ -381,6 +381,39 @@ baseline above used this exact version), so the API surface we depend on
 (`hf_hub_download`) is already confirmed working on a 1.x release, not just
 assumed compatible.
 
+### Third real Colab run, third failure (still plumbing, not us this time)
+
+`pip install` succeeded (wheels for `bddl`, `robomimic`, `hf-egl-probe`,
+`egl_probe` all built), but the setup verification step then crashed:
+
+```
+Do you want to specify a custom path for the dataset folder? (Y/N): Traceback...
+  File ".../libero/libero/__init__.py", line 104, in <module>
+    answer = input(...)
+EOFError: EOF when reading a line
+```
+
+Root cause, read from the actual `hf-libero` source
+(`huggingface/lerobot-libero`, the fork lerobot's `libero` extra installs),
+not guessed: `libero/libero/__init__.py` runs an interactive
+`input("Do you want to specify a custom path for the dataset folder? (Y/N): ")`
+prompt the first time it's imported, gated purely on
+`if not os.path.exists(config_file)` (`config_file` = `$LIBERO_CONFIG_PATH/config.yaml`,
+default `~/.libero/config.yaml`) — there is no env var or flag to suppress it.
+In any non-interactive context (this script, a Colab cell run as a
+subprocess, CI) that `input()` immediately hits EOF and crashes.
+
+Fixed in `setup_colab.sh` (new step 3, "Pre-seed the `libero` package's own
+config.yaml"): before ever importing `lerobot.envs.libero` (which transitively
+imports `libero.libero`), a small Python snippet writes that config file
+itself, replicating `get_default_path_dict()`'s exact default-path logic from
+the actual source. It only imports the *outer* `libero` package to locate the
+install directory (confirmed empty `__init__.py` — does not execute
+`libero/libero/__init__.py`, so this is safe and doesn't trigger the prompt
+itself). `LIBERO_CONFIG_PATH` is set to local disk (`/content/xgap_libero_config`),
+not Drive, since the paths it contains are only valid for the current
+session's site-packages layout.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
