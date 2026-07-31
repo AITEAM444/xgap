@@ -4,17 +4,32 @@
 # Run this at the top of every Colab session, before importing anything else:
 #   !bash /content/drive/MyDrive/xgap/setup_colab.sh
 #
-# IMPORTANT: this script sets MUJOCO_GL=egl for the *subprocesses it spawns*
-# (pip installs, the nvidia-smi/nproc probes). It CANNOT set it inside the
-# Jupyter kernel's own Python process -- Colab's `!` shell is a child process,
-# env vars set there do not propagate back. Your notebook's FIRST cell, before
-# any other import (torch, lerobot, mujoco, numpy-that-imports-mujoco, etc.)
-# MUST be:
+# IMPORTANT: every env var this script `export`s (MUJOCO_GL, HF_HOME,
+# LEROBOT_DATASET_CACHE, LIBERO_CONFIG_PATH) only affects THIS script's own
+# subprocesses (pip install, the verification imports below). It does NOT
+# propagate to a later, separate `!python scripts/run_demo_replay.py` cell --
+# each `!`-prefixed cell is its own subprocess, and bash `export` dies with the
+# process that set it. Two things follow from this:
 #
-#   import os
-#   os.environ["MUJOCO_GL"] = "egl"
+# 1. Your notebook's FIRST cell, before any other import (torch, lerobot,
+#    mujoco, numpy-that-imports-mujoco, etc.), MUST be:
 #
-# Only after that cell should you `import lerobot` / run scripts that touch LIBERO.
+#      import os
+#      os.environ["MUJOCO_GL"] = "egl"
+#
+#    (setting it via `os.environ` in the KERNEL's own Python process, not a
+#    `!` cell, is what makes it visible to every later `!` cell too -- unlike
+#    bash export, os.environ set in the kernel persists for the rest of the
+#    session and IS inherited by subprocesses `!` launches afterward.)
+#
+# 2. After running this script, run the notebook's env-adoption cell (reads
+#    /content/.xgap_env, written by step 0 below, into os.environ the same
+#    way) BEFORE running any script cell -- otherwise HF_HOME/
+#    LEROBOT_DATASET_CACHE/LIBERO_CONFIG_PATH silently reset to their
+#    unconfigured defaults in that cell's subprocess. This is exactly the bug
+#    that caused libero's interactive dataset-path prompt to reappear in
+#    `run_demo_replay.py` even though setup_colab.sh's own verification step
+#    (a child of THIS script) had already passed.
 
 set -euo pipefail
 
@@ -56,6 +71,18 @@ echo "[xgap setup] XGAP_DRIVE_ROOT=${XGAP_DRIVE_ROOT}"
 echo "[xgap setup] HF_HOME=${HF_HOME}"
 echo "[xgap setup] LEROBOT_DATASET_CACHE=${LEROBOT_DATASET_CACHE}"
 echo "[xgap setup] LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH}"
+
+# Hand these resolved values to the notebook's env-adoption cell (see header comment
+# above) -- this file is the single source of truth for the path defaults/overrides
+# above; the notebook just reads whatever this script actually resolved, rather than
+# duplicating these path defaults itself.
+cat > /content/.xgap_env <<ENVEOF
+XGAP_DRIVE_ROOT=${XGAP_DRIVE_ROOT}
+MUJOCO_GL=${MUJOCO_GL}
+HF_HOME=${HF_HOME}
+LEROBOT_DATASET_CACHE=${LEROBOT_DATASET_CACHE}
+LIBERO_CONFIG_PATH=${LIBERO_CONFIG_PATH}
+ENVEOF
 
 # ---------------------------------------------------------------------------
 # 1. Detect state BEFORE touching anything (for the restart-required banner

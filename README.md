@@ -457,6 +457,38 @@ Fixed both, grounded in source, not guesswork:
 This one was on us, not a lerobot/libero surprise — worth naming as such
 rather than filing it next to the previous three.
 
+### Fifth real Colab run, fifth failure (env var propagation, an architecture bug)
+
+The LIBERO dataset-path prompt (third failure, above) came back — but this
+time inside `scripts/run_demo_replay.py`, in a cell run *after*
+`setup_colab.sh` had already passed its own verification step cleanly.
+
+Root cause: `setup_colab.sh`'s `export HF_HOME=...` / `LEROBOT_DATASET_CACHE`
+/ `LIBERO_CONFIG_PATH` only affect *that script's own* subprocesses (the pip
+install, its own verification import) — they die with the script. A separate
+`!python scripts/run_demo_replay.py` cell is a brand-new subprocess that never
+inherited them, so `LIBERO_CONFIG_PATH` was unset there, `libero.libero`
+fell back to its own default (`~/.libero/config.yaml`) instead of the file
+`setup_colab.sh` had pre-seeded at `/content/xgap_libero_config/config.yaml`,
+found nothing there, and prompted again. The exact same gap almost certainly
+also silently defeated `HF_HOME` (checkpoint caching to Drive) and
+`LEROBOT_DATASET_CACHE` in every real run so far — this wasn't just a LIBERO
+quirk, it was a hole in the whole env-var design.
+
+Why `MUJOCO_GL` never had this problem: it's set via `os.environ` directly in
+the notebook's own Python kernel (cell 1), and the kernel process's environ
+*is* inherited by every subsequent `!`-cell subprocess for the rest of the
+session — unlike a bash `export` inside one `!bash script.sh` invocation,
+which isn't.
+
+Fixed by extending that same mechanism to the rest of the vars, without
+duplicating path defaults in two places: `setup_colab.sh` now writes its
+*resolved* values (after defaults/overrides are applied) to
+`/content/.xgap_env`, and `notebooks/run_replay.ipynb` gained a new cell,
+right after the `setup_colab.sh` cell, that reads that file into the kernel's
+`os.environ`. `setup_colab.sh` stays the single source of truth for the path
+logic; the notebook just adopts whatever it resolved.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
