@@ -62,6 +62,14 @@ export HF_HOME="${HF_HOME:-${XGAP_DRIVE_ROOT}/.hf_cache}"
 # tested plan for syncing the finished cache to Drive as one bulk copy afterward (not
 # streaming the download directly onto the Drive mount). Re-downloading tens of GB every
 # fresh Colab session is an accepted, known cost for now -- see README.
+#
+# CORRECTION 3: the "force-download most/all of the dataset" premise above is now moot --
+# xgap_code/dataset_io.py no longer uses LeRobotDataset for frame access at all (it also
+# turned out to materialize far more than needed, causing an out-of-memory kill). The
+# replacement (scan_shards_for_episodes) downloads shards on demand into its OWN local
+# cache_dir, not this one. HF_LEROBOT_HOME now only holds small metadata
+# (LeRobotDatasetMetadata's info.json/tasks.parquet/episodes parquet) -- staying on local
+# disk is still right, just for a much smaller reason than originally written here.
 export HF_LEROBOT_HOME="${HF_LEROBOT_HOME:-/content/xgap_hf_lerobot_cache}"
 
 # LIBERO_CONFIG_PATH: where the `libero` package's own config.yaml (dataset/bddl/assets

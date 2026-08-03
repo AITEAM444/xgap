@@ -708,6 +708,59 @@ tested plan for a post-download bulk sync to Drive (copying already-complete
 local files over, rather than streaming the download directly onto the FUSE
 mount).
 
+### Eleventh: an out-of-memory kill, and abandoning `LeRobotDataset` for frame access
+
+Right after the local-disk revert above, the download died again — this time
+with a clear cause: **system RAM exhaustion**, not disk/network. Unlike the
+Drive-FUSE death, `snapshot_download` writing to local disk shouldn't itself
+be RAM-hungry; the likely culprit is `LeRobotDataset` materializing full rows
+(including the embedded image columns — this dataset stores images directly
+inside the data parquet files, confirmed earlier this session, no separate
+video files) for far more of the ~273k-frame dataset than our per-episode
+access pattern actually needs.
+
+Rather than patch this a third time, `xgap_code/dataset_io.py` was rewritten
+to stop using `LeRobotDataset` for frame access entirely (its docstring now
+documents this decision as CORRECTION 5, with the full chain of five prior
+corrections above it). `LeRobotDatasetMetadata` is still used — its
+metadata-level `get_task_index()` / `filter_episodes()` have been correct in
+every single run so far, only the per-episode *file lookup* built on top of
+it (`get_data_file_path()`, see the ninth-run section above) was broken.
+Everything past "which episodes does this task have" is now handled by two
+new functions:
+
+- `list_shard_paths()` — lists the dataset's actual shard files from the Hub
+  API directly, not the stale `data/chunk_index`/`data/file_index` metadata
+  columns.
+- `scan_shards_for_episodes()` — downloads shards **one at a time**, stopping
+  as soon as every target episode is found (not the whole dataset), and reads
+  **only** the `action`/`observation.state`/`episode_index`/`frame_index`
+  columns via `pyarrow` column projection — the embedded image columns are
+  never decoded. This bounds peak memory to roughly one shard's numeric data,
+  regardless of dataset size, and is the same pattern
+  `scripts/analyze_demo_actions.py` already used successfully this session
+  (see the H3 baseline section), now generalized and given real test coverage
+  (`tests/test_dataset_io.py`, 4 tests against a synthetic fixture shard —
+  the one part of this whole dataset-loading saga that didn't need another
+  blind Colab round-trip, since it only needs `huggingface_hub` + `pyarrow`,
+  both available locally).
+
+Also corrected in passing: the ninth-run section above reasoned that
+`libero_spatial`'s episodes "extend into the dataset's second chunk" — false.
+Checked directly via `HfApi().list_repo_files()`: the dataset has exactly
+**377 shard files, all under `data/chunk-000/`** — no `chunk-001` exists at
+all, despite `total_episodes=1693` exceeding `info.json`'s
+`chunks_size=1000`. That assumption doesn't change anything now (nothing here
+still depends on chunk numbering), but it's worth not repeating.
+
+One more risk this surfaced and fixed: `scan_shards_for_episodes`'s own
+`hf_hub_download` calls would, by default, cache under `HF_HOME` — which is
+deliberately a Drive path (for small checkpoint/config caching). Left alone,
+that's the exact same Drive-FUSE risk that just killed a run, through a
+different code path. Fixed by passing `cache_dir` explicitly, resolved via
+`tempfile.gettempdir()` (always local) rather than a new env var that could
+suffer the same cross-cell-propagation issues already hit twice this session.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
