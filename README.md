@@ -1275,6 +1275,50 @@ config supply it rather than reusing `pi05`'s `10` by copy-paste.
   sound above) is the suspect. Next: `n_action_steps` sweep and wrist-camera
   input verification (H1, H2).
 
+**Result: 0/5 (`pc_success=0.0`, `avg_sum_reward=0.0`), confirmed via pure
+`lerobot-eval` with zero `xgap` code involved.** This is decisive: the
+original N=1 symptom reproduces on completely independent infrastructure
+already proven sound (the `pi05` sanity check above). The bug is not
+`xgap`'s harness -- it is specific to this checkpoint (or this checkpoint's
+interaction with the environment). Also notable: `eval_ep_s=462s` (~7.7 min
+per episode) at the checkpoint's default `n_action_steps=1` -- a fresh
+policy call every single env step, closed-loop, using only the first of 50
+predicted actions each time. Worth keeping in mind for time-budgeting H1
+below (higher `n_action_steps` means fewer policy calls per episode, likely
+faster as well as a different execution granularity).
+
+Wrist-camera input (H2) is *not* a live suspect for this specific 0%
+result -- `lerobot-eval`'s own `LiberoEnv` supplies both `image` and
+`image2` automatically (that's the point of bypassing `xgap`'s harness
+entirely here); H2 only mattered as a suspect for `xgap`'s *own* harness
+potentially dropping a camera, which this run doesn't go through at all.
+So H1 (`n_action_steps`) is the next -- and only remaining -- item from the
+original hypothesis order to test against this checkpoint via `lerobot-eval`.
+
+### H1: `n_action_steps` sweep, still via pure `lerobot-eval`
+
+Same command as above, sweeping `--policy.n_action_steps` one value at a
+time (sequential, per the original H1->H2->H4 order -- not exhaustive).
+`1` (the checkpoint's own default) already ran: 0/5. Next candidates, in
+order: `10` (the value that worked for `pi05`'s published reproduction --
+not assumed correct for this checkpoint, just the next thing to try),
+then `25`, then the full `50` (`chunk_size`, fully open-loop) if `10` also
+fails.
+
+```
+!lerobot-eval \
+    --policy.path=HuggingFaceVLA/smolvla_libero \
+    --policy.n_action_steps=10 \
+    --env.type=libero \
+    --env.task=libero_10 \
+    --env.task_ids=[0] \
+    --eval.batch_size=1 \
+    --eval.n_episodes=5 \
+    --env.max_parallel_tasks=1 \
+    > /content/lerobot_eval_smolvla_nas10.log 2>&1
+!tail -n 80 /content/lerobot_eval_smolvla_nas10.log
+```
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
