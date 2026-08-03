@@ -55,6 +55,13 @@ parallel_envs: auto
 parallel_envs_cap: 8
 sync_every_n_episodes: 5
 
+# Off by default at this larger scale (more episodes * more tasks -- extra render() calls
+# and disk I/O add up); trajectory plots stay on since they're cheap (matplotlib on
+# already-logged data, no extra env calls). Turn video sampling on for a targeted rerun of
+# specific tasks if the smoke config's frames don't already answer the question.
+video_sample_every_n_steps: 0
+save_trajectory_plots: true
+
 checkpoint_name: N/A_demo_replay
 checkpoint_hash: N/A_demo_replay
 git_commit: unknown  # overwritten at runtime by `git rev-parse HEAD`

@@ -9,6 +9,7 @@ returned by harness.make_real_libero_env.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,6 +18,23 @@ from .gripper_metrics import longest_close_run
 from .harness import read_actual_control_mode
 from .logging_schema import EpisodeRecord
 from .metering import StageTimer
+
+
+def _extract_state(obs: dict) -> list[float]:
+    """[eef_pos_x, eef_pos_y, eef_pos_z, gripper_qpos_0, gripper_qpos_1] from the raw env
+    obs (obs_type="pixels_agent_pos"). Not the policy-facing 8D observation.state (that
+    also needs quat->axis-angle) -- this is for checking "did the arm get near the
+    object", not for feeding a policy. See logging_schema.py's state_chunk field."""
+    robot_state = obs["robot_state"]
+    eef_pos = np.asarray(robot_state["eef"]["pos"], dtype=np.float32)
+    gripper_qpos = np.asarray(robot_state["gripper"]["qpos"], dtype=np.float32)
+    return np.concatenate([eef_pos, gripper_qpos]).tolist()
+
+
+def _save_frame(frame: np.ndarray, path: Path) -> None:
+    import imageio.v3 as iio
+
+    iio.imwrite(path, frame)
 
 
 def replay_episode(
@@ -34,7 +52,14 @@ def replay_episode(
     checkpoint_hash: str,
     git_commit: str,
     config_file: str,
+    video_dir: Path | None = None,
+    video_sample_every_n_steps: int = 0,
 ) -> EpisodeRecord:
+    """video_dir/video_sample_every_n_steps: if a dir is given and the sample interval is
+    > 0, env.render() is called every N steps and saved as step_<i>.png under video_dir --
+    for visually checking whether the arm ever gets near the target object (step 2/3
+    instrumentation; see README "instrumented rollout"). Disabled by default (video_dir=None)
+    since it's extra render() calls -- only turn on for episodes you actually want to inspect."""
     timer = StageTimer()
     t_episode_start = time.perf_counter()
 
@@ -45,15 +70,27 @@ def replay_episode(
     # control_mode we requested -- see harness.read_actual_control_mode.
     actual_control_mode = read_actual_control_mode(env)
 
+    if video_dir is not None:
+        video_dir.mkdir(parents=True, exist_ok=True)
+
     success = False
     executed_actions: list[list[float]] = []
+    executed_states: list[list[float]] = []
+    video_frame_steps: list[int] = []
     n_steps = 0
     for action in demo_actions:
         action = np.asarray(action, dtype=np.float32)
         with timer.stage("physics"):
-            _obs, _reward, terminated, truncated, info = env.step(action)
+            obs, _reward, terminated, truncated, info = env.step(action)
         executed_actions.append(action.tolist())
+        executed_states.append(_extract_state(obs))
+        step_idx = n_steps  # 0-indexed step just executed
         n_steps += 1
+        if video_dir is not None and video_sample_every_n_steps > 0 and step_idx % video_sample_every_n_steps == 0:
+            with timer.stage("render"):
+                frame = env.render()
+            _save_frame(frame, video_dir / f"step_{step_idx:05d}.png")
+            video_frame_steps.append(step_idx)
         if info.get("is_success", False):
             success = True
         if terminated or truncated:
@@ -68,6 +105,8 @@ def replay_episode(
         environment_seed=environment_seed,
         condition=condition,
         action_chunk=executed_actions,
+        state_chunk=executed_states,
+        video_frame_steps=video_frame_steps,
         episode_success=success,
         rollout_length=n_steps,
         checkpoint_name=checkpoint_name,

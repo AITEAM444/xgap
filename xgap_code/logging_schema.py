@@ -38,6 +38,15 @@ EPISODE_SCHEMA = pa.schema(
         pa.field("candidate_id", pa.int64(), nullable=True),
         # Full per-step action sequence actually executed, shape (T, 7).
         pa.field("action_chunk", pa.list_(pa.list_(pa.float32()))),
+        # Full per-step [eef_pos_x, eef_pos_y, eef_pos_z, gripper_qpos_0, gripper_qpos_1],
+        # shape (T, 5) -- from the raw env obs's robot_state, not the policy-facing 8D
+        # observation.state (which also needs quat->axis-angle; not reconstructed here
+        # since this is for visually/numerically checking "did the arm ever get near the
+        # object", not for feeding a policy). See replay.py's replay_episode.
+        pa.field("state_chunk", pa.list_(pa.list_(pa.float32()))),
+        # Step indices (into action_chunk/state_chunk) that got a rendered frame saved to
+        # <episode video dir>/step_<i>.png -- see replay.py's video_sample_every_n_steps.
+        pa.field("video_frame_steps", pa.list_(pa.int64())),
         pa.field("episode_success", pa.bool_()),
         pa.field("rollout_length", pa.int64()),
         pa.field("checkpoint_name", pa.string()),
@@ -81,6 +90,8 @@ class EpisodeRecord:
     environment_seed: int
     condition: str
     action_chunk: list[list[float]]
+    state_chunk: list[list[float]]
+    video_frame_steps: list[int]
     episode_success: bool
     rollout_length: int
     checkpoint_name: str

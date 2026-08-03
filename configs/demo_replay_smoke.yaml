@@ -45,6 +45,14 @@ parallel_envs: auto
 parallel_envs_cap: 8
 sync_every_n_episodes: 1  # sync every episode at this tiny scale -- there are only 2
 
+# Now that demo replay actually completes and comes back 0/10 (both control_modes),
+# turn on frame capture to LOOK at what's happening -- see README "instrumented
+# rollout". Every 20 steps, a frame is saved; local disk only (outputs/*/videos/), not
+# synced to Drive -- meant for quick inspection within this Colab session (file
+# browser / manual download of a few PNGs), not long-term storage.
+video_sample_every_n_steps: 20
+save_trajectory_plots: true
+
 checkpoint_name: N/A_demo_replay
 checkpoint_hash: N/A_demo_replay
 git_commit: unknown  # overwritten at runtime by `git rev-parse HEAD`

@@ -774,6 +774,106 @@ far more shards than necessary. Fixed: cap to `max_episodes` **before**
 calling `scan_shards_for_episodes`, not after, so it stops as soon as the
 actually-needed subset is found.
 
+## First real science result: demo replay fails, 0/10, both control modes
+
+`configs/demo_replay_smoke.yaml` (1 task, 5 episodes, both `control_mode`s)
+finally ran end to end and produced a real (not plumbing-broken) result:
+
+```json
+{
+  "decision": "both_low_suspect_init_state",
+  "mode_summary": {
+    "relative": {"n_episodes": 5, "success_rate": 0.0},
+    "absolute": {"n_episodes": 5, "success_rate": 0.0}
+  }
+}
+```
+
+Per-episode telemetry (`rollout_length`, `longest_close_run_steps`,
+`actual_control_mode`, already logged by design):
+
+| condition | seed | success | rollout_length | longest_close_run |
+|---|---|---|---|---|
+| absolute | 0 | False | 285 | 87 |
+| absolute | 1 | False | 296 | 81 |
+| absolute | 2 | False | 296 | 81 |
+| absolute | 3 | False | 288 | 82 |
+| absolute | 4 | False | 292 | 92 |
+| relative | 0 | False | 285 | 87 |
+| relative | 1 | False | 296 | 81 |
+| relative | 2 | False | 296 | 81 |
+| relative | 3 | False | 288 | 82 |
+| relative | 4 | False | 292 | 92 |
+
+**`rollout_length` and `longest_close_run_steps` are identical between
+`relative` and `absolute` per seed.** This is not evidence that `control_mode`
+had no physical effect -- both fields are artifacts of the replay loop itself:
+`rollout_length` is just "ran out of recorded demo actions" (LIBERO's own
+`done`/`is_success` termination never fired in either condition, for any of
+the 10 episodes), and `longest_close_run_steps` is computed from the *injected*
+action array, which is identical in both conditions by construction (same
+demo, same actions, only the pose-control interpretation differs).
+
+**What the numbers do show:** every episode replayed the full recorded demo
+(200-300 steps, no crash, no early termination) with a normal-looking
+open→close→open gripper command pattern (`longest_close_run_steps` 81-92,
+well above the ~15-20 step actuation lag measured from real demos) — the
+replayed script looks structurally like a complete, well-formed demo. Yet
+`episode_success` is `False` every time, **including when literally replaying
+the dataset's own recorded ground-truth actions.**
+
+This is exactly the pre-declared stop condition from the start of this
+project: *"이게 낮으면 정책 이전에 하니스가 깨진 것이고 이후 진단은 전부
+무의미하다"* (if this is low, the harness is broken before the policy is even
+involved, and everything downstream is meaningless). No policy has been run
+at any point in this investigation — this result is entirely about whether
+our environment/harness reproduces the conditions the demo was recorded
+under, and the answer right now is no. **Step 3 (policy rollout) is on hold
+until this is resolved.**
+
+Leading hypothesis, unchanged from when it was first flagged in
+`harness.make_real_libero_env`'s docstring at the very start of this session:
+`within_task_index` (this project's own dataset-global-episode-index-sorted
+enumeration, used as `LiberoEnv`'s `episode_index` to select
+`task_suite.get_task_init_states()[idx % len(init_states)]`) may not
+correspond 1:1 with LIBERO's own original init-state ordering for this task.
+A structurally-normal-looking replayed trajectory that still misses is the
+expected signature of "started from the wrong physical configuration, then
+blindly replayed the right relative motions anyway" — and matches the
+original reported symptom pattern (arm approaches plausibly, grasp fails).
+Secondary hypothesis: `control_freq=10` not matching the demos' true native
+collection frequency (see the `control_freq` config comment).
+
+### Instrumentation added to investigate this (not yet run)
+
+Per request, added actual instrumented-rollout capability rather than
+guessing further from summary statistics alone:
+
+- `logging_schema.py`: `state_chunk` (per-step `[eef_pos_x,y,z,
+  gripper_qpos_0,1]`, from the raw env observation -- not the policy-facing
+  8D `observation.state`, which also needs quat→axis-angle and isn't needed
+  for this check) and `video_frame_steps` (which steps got a saved frame).
+- `replay.py`: `replay_episode()` now accepts `video_dir` /
+  `video_sample_every_n_steps` -- every Nth step, `env.render()` is called
+  and saved as `step_<i>.png`. Off by default (extra render() calls).
+- `plots.py`: `plot_episode_trajectory()` — eef position (x,y,z), gripper
+  qpos, and `action[:,6]` over time for one episode, with an optional
+  second (`compare_*`) series overlaid for later policy-vs-demo comparison.
+- `config.py` / `configs/demo_replay_smoke.yaml`: `video_sample_every_n_steps:
+  20` (on for the smoke config -- this is exactly the run that needs looking
+  at) and `save_trajectory_plots: true` (cheap, on everywhere). Both local
+  disk only (`outputs/*/videos/`), not synced to Drive -- meant for
+  interactive inspection within the session (file browser / downloading a
+  few PNGs), not long-term storage.
+
+All new logging/plotting/frame-saving code is covered by local tests against
+`MockLiberoEnv` (`tests/test_wiring_and_metrics.py`) since it only needed
+`env.step()`/`env.render()` and matplotlib, no simulator. What's NOT yet
+verified: whether real `LiberoEnv.render()` frames actually show the arm
+relative to the object clearly enough to be useful, and whether `state_chunk`
+correctly reflects real (not mock) `robot_state` values. That needs an actual
+Colab run of the updated smoke config.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

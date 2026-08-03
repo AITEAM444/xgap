@@ -161,14 +161,20 @@ class MockLiberoEnv:
 
     def _make_obs(self):
         img = np.zeros((256, 256, 3), dtype=np.uint8)
+        # eef drifts a little with step count so trajectory logging/plotting has something
+        # non-degenerate to show in tests, without pretending to simulate real physics.
+        pos = np.array([0.001 * self._t, 0.0, 0.0])
         return {
             "pixels": {"image": img, "image2": img},
             "robot_state": {
-                "eef": {"pos": np.zeros(3), "quat": np.array([0, 0, 0, 1.0]), "mat": np.eye(3)},
+                "eef": {"pos": pos, "quat": np.array([0, 0, 0, 1.0]), "mat": np.eye(3)},
                 "gripper": {"qpos": np.array([0.04, -0.04]), "qvel": np.zeros(2)},
                 "joints": {"pos": np.zeros(7), "vel": np.zeros(7)},
             },
         }
+
+    def render(self):
+        return np.zeros((256, 256, 3), dtype=np.uint8)
 
     def close(self):
         pass

@@ -15,6 +15,8 @@ def _dummy_record(control_mode="relative", success=True) -> EpisodeRecord:
         environment_seed=0,
         condition=f"demo_replay_{control_mode}",
         action_chunk=[[0.0] * 7, [0.1] * 7],
+        state_chunk=[[0.0] * 5, [0.1] * 5],
+        video_frame_steps=[0],
         episode_success=success,
         rollout_length=2,
         checkpoint_name="N/A_demo_replay",

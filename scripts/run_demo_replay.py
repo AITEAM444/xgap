@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from xgap_code.config import DemoReplayConfig  # noqa: E402
 from xgap_code.harness import MockLiberoEnv, get_libero_task_language, make_real_libero_env  # noqa: E402
 from xgap_code.logging_schema import EpisodeStore, episode_key  # noqa: E402
+from xgap_code.plots import plot_episode_trajectory  # noqa: E402
 from xgap_code.replay import (  # noqa: E402
     decide_env_convention,
     replay_episode,
@@ -78,7 +79,7 @@ def _write_decision(store: EpisodeStore, decision: dict) -> None:
 def _run_one_episode(
     cfg: DemoReplayConfig, config_file: str, mock: bool, git_commit: str,
     suite: str, task_id, task_label: str, episode_seed: int, control_mode: str,
-    demo_episodes,
+    demo_episodes, episode_key_str: str,
 ):
     condition = f"demo_replay_{control_mode}"
     if mock:
@@ -96,6 +97,12 @@ def _run_one_episode(
         # run()'s comment on why this used to be (wastefully, and buggily) recomputed here.
         demo_actions = demo_episodes[episode_seed].actions
 
+    # Local staging only (not synced to Drive) -- meant for quick interactive inspection
+    # within the same Colab session, e.g. via the file browser or downloading a few files,
+    # not long-term storage. See README "instrumented rollout".
+    videos_root = Path(cfg.local_output_root) / "videos"
+    video_dir = videos_root / episode_key_str if cfg.video_sample_every_n_steps > 0 else None
+
     record = replay_episode(
         env,
         demo_actions,
@@ -110,8 +117,19 @@ def _run_one_episode(
         checkpoint_hash=cfg.checkpoint_hash,
         git_commit=git_commit,
         config_file=config_file,
+        video_dir=video_dir,
+        video_sample_every_n_steps=cfg.video_sample_every_n_steps,
     )
     env.close()
+
+    if cfg.save_trajectory_plots:
+        plot_episode_trajectory(
+            record.state_chunk,
+            record.action_chunk,
+            save_path=str(videos_root / f"{episode_key_str}.png"),
+            title=f"{episode_key_str} (success={record.episode_success}, len={record.rollout_length})",
+        )
+
     return record
 
 
@@ -173,7 +191,7 @@ def run(cfg: DemoReplayConfig, config_file: str, mock: bool) -> dict:
                     record = _run_one_episode(
                         cfg, config_file, mock, git_commit,
                         suite, task_id, task_label, episode_seed, control_mode,
-                        demo_episodes,
+                        demo_episodes, key,
                     )
                     store.write_episode(key, record)
                     all_rows.append(record.to_row())

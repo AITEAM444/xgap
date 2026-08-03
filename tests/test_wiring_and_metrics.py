@@ -9,8 +9,8 @@ import numpy as np
 
 from xgap_code.gripper_metrics import DEMO_MIN_ACTUATION_LAG_STEPS, longest_close_run
 from xgap_code.harness import MockLiberoEnv, read_actual_control_mode
-from xgap_code.plots import plot_gripper_action_histogram
-from xgap_code.replay import verify_control_mode_wiring
+from xgap_code.plots import plot_episode_trajectory, plot_gripper_action_histogram
+from xgap_code.replay import replay_episode, verify_control_mode_wiring
 
 
 def test_read_actual_control_mode_reflects_correct_wiring():
@@ -74,3 +74,64 @@ def test_plot_gripper_action_histogram_writes_file(tmp_path):
     plot_gripper_action_histogram(demo, policy, str(out_path))
     assert out_path.exists()
     assert out_path.stat().st_size > 0
+
+
+def test_plot_episode_trajectory_writes_file(tmp_path):
+    state = [[0.0, 0.0, 0.0, 0.04, -0.04], [0.01, 0.0, 0.0, 0.0, 0.0]]
+    action = [[0.0] * 7, [0.0] * 6 + [1.0]]
+    out_path = tmp_path / "traj.png"
+    plot_episode_trajectory(state, action, str(out_path), title="test")
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0
+
+
+def test_plot_episode_trajectory_with_comparison_series(tmp_path):
+    state = [[0.0, 0.0, 0.0, 0.04, -0.04]] * 3
+    action = [[0.0] * 7] * 3
+    out_path = tmp_path / "traj_cmp.png"
+    plot_episode_trajectory(
+        state, action, str(out_path),
+        compare_state_chunk=state, compare_action_chunk=action, compare_label="demo",
+    )
+    assert out_path.exists()
+
+
+def test_replay_episode_saves_state_chunk_and_video_frames(tmp_path):
+    env = MockLiberoEnv(max_steps=10, require_final_gripper_close=True)
+    actions = np.zeros((10, 7), dtype=np.float32)
+    actions[:, 6] = -1.0
+    actions[-1, 6] = 1.0
+    video_dir = tmp_path / "videos" / "ep0"
+
+    record = replay_episode(
+        env, actions,
+        task_id="libero_10:0", task_suite="libero_10", episode_seed=0, environment_seed=0,
+        condition="demo_replay_relative", control_mode="relative", control_freq=10,
+        checkpoint_name="N/A_demo_replay", checkpoint_hash="N/A_demo_replay",
+        git_commit="deadbeef", config_file="configs/demo_replay.yaml",
+        video_dir=video_dir, video_sample_every_n_steps=3,
+    )
+
+    assert len(record.state_chunk) == record.rollout_length == 10
+    assert len(record.state_chunk[0]) == 5  # eef_pos(3) + gripper_qpos(2)
+    # steps 0, 3, 6, 9 sampled (every 3rd, 0-indexed)
+    assert record.video_frame_steps == [0, 3, 6, 9]
+    saved = sorted(p.name for p in video_dir.glob("*.png"))
+    assert saved == ["step_00000.png", "step_00003.png", "step_00006.png", "step_00009.png"]
+
+
+def test_replay_episode_no_video_when_disabled(tmp_path):
+    env = MockLiberoEnv(max_steps=5, require_final_gripper_close=False)
+    actions = np.zeros((5, 7), dtype=np.float32)
+    actions[:, 6] = -1.0
+
+    record = replay_episode(
+        env, actions,
+        task_id="libero_10:0", task_suite="libero_10", episode_seed=0, environment_seed=0,
+        condition="demo_replay_relative", control_mode="relative", control_freq=10,
+        checkpoint_name="N/A_demo_replay", checkpoint_hash="N/A_demo_replay",
+        git_commit="deadbeef", config_file="configs/demo_replay.yaml",
+    )
+
+    assert record.video_frame_steps == []
+    assert len(record.state_chunk) == 5
