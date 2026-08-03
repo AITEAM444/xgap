@@ -1,0 +1,53 @@
+# Single-variable comparison against demo_replay_smoke.yaml: same task/episode/control_modes,
+# only control_freq changed 10 -> 20 (lerobot's LiberoEnv/EnvConfig default, and robosuite's
+# own default control_freq -- see README "Step 1 findings"). Diagnostic purpose: the smoke
+# config's videos show the arm grasping correctly, then overshooting off-screen during
+# transport and coming back empty-handed -- a "right direction, too much distance/duration"
+# pattern consistent with control_freq being too LOW for what the demo actions assume (each
+# step's delta action gets applied for longer/further than the demo intended). If cf=20 fixes
+# the overshoot, that confirms it; if the overshoot persists identically, control_freq is
+# ruled out and the leading suspect goes back to init-state/within_task_index mapping.
+#
+# Deliberately tiny (1 episode) -- this is a single side-by-side visual comparison, not a
+# statistics run. Widen only if this comparison is inconclusive on its own.
+
+experiment_name: demo_replay_smoke_cf20
+
+local_output_root: outputs/demo_replay_smoke_cf20/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/demo_replay_smoke_cf20
+
+dataset_repo_id: HuggingFaceVLA/libero
+
+task_suites:
+  - libero_10
+
+task_ids:
+  libero_10: [0]
+
+episodes_per_task: 1
+
+control_modes:
+  - relative
+  - absolute
+
+control_freq: 20  # <-- the one variable being changed vs demo_replay_smoke.yaml (was 10)
+
+init_states: true
+
+n_decision_points: 1
+exec_horizon: 1
+selection_unit: chunk
+
+parallel_envs: auto
+parallel_envs_cap: 8
+sync_every_n_episodes: 1
+
+video_sample_every_n_steps: 1
+save_trajectory_plots: true
+
+checkpoint_name: N/A_demo_replay
+checkpoint_hash: N/A_demo_replay
+git_commit: unknown  # overwritten at runtime by `git rev-parse HEAD`
+
+random_seed: 0
+resume: true

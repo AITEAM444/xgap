@@ -885,6 +885,62 @@ actually show the arm relative to the object clearly enough to be useful, and
 whether `state_chunk` correctly reflects real (not mock) `robot_state`
 values. That needs an actual Colab run of the updated smoke config.
 
+## Visual diagnosis of the 0/10 result
+
+The smoke config's instrumentation (above) was run for real, and it worked:
+real `LiberoEnv.render()` frames and `state_chunk` both came back usable.
+
+**What the videos show.** Watching `demo_replay_relative__..._0.mp4`: the arm
+reaches for and grasps a real object, carries it off-screen, comes back
+empty-handed, then near the basket closes the gripper again -- this time
+fully, on nothing. The trajectory plot for this same episode confirms it
+numerically: `gripper_qpos_0` drops only to ~0.027 during the first close
+(fingers stopped by something between them -- a real grasp) but drops all the
+way to ~0.0 during the second close (nothing between the fingers -- closed on
+air). `action[:,6]` shows the matching open→close→open→close→open command
+sequence. Task `libero_10:0` is a two-object task ("put both the alphabet
+soup and the tomato sauce in the basket"), so two grasp attempts is expected
+-- the first one works, the second one doesn't find its target.
+
+**Bonus finding from the same plots:** `relative` mode's eef trajectory is
+smooth and stays in a bounded, physically-plausible range; `absolute` mode's
+is visibly jittery/erratic (eef_z spikes past 1.0 partway through). This
+matches what you'd expect if the raw demo actions are genuinely small deltas
+-- interpreting the same small numbers as absolute world-frame targets every
+step produces jumpy, inconsistent motion. `success=False` in both regardless,
+but this is independent evidence `relative` is the physically sane
+interpretation, beyond what the binary success-rate comparison alone shows.
+
+**A verification mistake, corrected before it became a false conclusion:** to
+check whether the init state matches the demo, the dataset's own recorded
+first frame was fetched directly (image bytes embedded in the data parquet,
+same technique as the H3 baseline) and compared to the video's first frame.
+The first attempt used the wrong reference -- it assumed `HuggingFaceVLA/libero`'s
+flattened `tasks.parquet` row order (task index 0 = "put the white mug on the
+left plate...") matches LIBERO's own internal `task_id` numbering for the
+`libero_10` suite. **It doesn't.** Checked directly (`harness.get_libero_task_language("libero_10",
+0)` in Colab, no simulation needed): LIBERO's own task 0 is "put both the
+alphabet soup and the tomato sauce in the basket" -- `tasks.parquet` index 5,
+not 0. (This is exactly the kind of ordering assumption `get_libero_task_language`
+was written to avoid trusting -- the mistake here was in ad hoc manual
+verification, not in `dataset_io.py`/`harness.py` themselves, which never
+made this assumption.) Once corrected, the dataset's actual first frame for
+the right episode (global `episode_index=8`, the first -- lowest-numbered --
+episode matching this task, fetched directly from `data/chunk-000/file-003.parquet`)
+**matches the video's first frame closely**: same basket position, same
+objects (soup can, ketchup bottle, milk carton, juice box, two small boxes)
+in the same relative layout. Camera zoom/crop differs slightly; object
+placement does not.
+
+**Net effect on the hypothesis ranking:** this weakens the init-state/`within_task_index`
+hypothesis (the starting layout is right) and strengthens `control_freq`
+(H1-adjacent) back to leading candidate -- a correct start followed by
+plausible-but-imprecise motion that misses by the second, more demanding
+manipulation is consistent with per-step actions being applied at the wrong
+scale/duration, not with a wrong scene. `configs/demo_replay_smoke_cf20.yaml`
+(same task/episode, `control_freq: 20` instead of `10`) is queued to test
+this directly -- not yet run.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
