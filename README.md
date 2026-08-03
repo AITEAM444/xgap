@@ -1125,7 +1125,81 @@ than assumed, and it holds. The bug is confined to `xgap_code` (most likely
 about how the SmolVLA checkpoint under test differs from
 `pi05_libero_finetuned` -- not the shared environment layer underneath both.
 
-Next: the init-state sweep (`scripts/sweep_init_states.py`), still queued.
+Next: the init-state sweep (`scripts/sweep_init_states.py`) -- results below.
+
+## Init-state sweep result: indexing bug confirmed, general mapping still unknown
+
+Ran `scripts/sweep_init_states.py` for real: libero_10 task 0
+(`demo_within_task_index=0`, dataset `episode_index=8`), the SAME demo used
+in every comparison above, replayed against all 50 candidate init_states
+LIBERO has for this task.
+
+**Only init_state 3 and 23 (of 50) succeed** -- both required objects placed
+in the basket -- when replaying this demo's own recorded actions.
+`run_demo_replay.py`'s current caller convention
+(`demo_episode_index_within_task=episode_seed` in `harness.make_real_libero_env`)
+had been running this exact demo against **init_state 0**, which is not one
+of the two that work. This directly confirms the leading suspect from the
+"both low" branch of `decide_env_convention`: the bug is `within_task_index`
+(`dataset_io.py`) being reused as a LIBERO init_state index without actually
+being one.
+
+**False alarm along the way, resolved by reading source, not guessing:** the
+video for index 3 appeared to show a milk carton, raising a "wrong task got
+loaded" concern. Checked task 0's actual BDDL file directly
+(`suite.get_task_bddl_file_path(0)`, LIBERO's own path resolver, not a
+reconstructed path) -- its object list is `alphabet_soup, cream_cheese,
+tomato_sauce, ketchup, orange_juice, milk, butter, basket`. `milk` is a real
+distractor object genuinely in this scene; task 0 is confirmed unchanged
+("put both the alphabet soup and the tomato sauce in the basket"). Several
+of these grocery items (`milk`, `orange_juice`, `cream_cheese`, `butter`)
+are all similarly-shaped cartons/boxes at 256x256 render resolution and are
+easy to visually mix up with each other -- not a bug.
+
+**Constant-offset hypothesis tested and rejected.** If `init_state =
+within_task_index + 3` generalized, demo 1 (`demo_within_task_index=1`,
+`configs/sweep_init_states_demo1.yaml`) should succeed at init_state 4 and/or
+24 (the same two candidates, shifted by 1). Checked with
+`scripts/render_init_state_video.py` (a standalone, always-re-runs script
+added specifically because `sweep_init_states.py`'s resume logic would
+otherwise silently skip re-running an already-completed index even after
+turning video on for it). Both **partially** succeeded -- the first of the
+two required objects was placed at both indices -- but neither reached full
+task success; the second object's placement failed both times. The simple
+constant-offset theory does not hold.
+
+**Checked whether the dataset stores the init_state directly** (would make
+all of the above unnecessary): inspected the full parquet schema of a shard
+file. Only standard LeRobot columns are present
+(`observation.images.image[2]`, `observation.state`, `action`, `timestamp`,
+`frame_index`, `episode_index`, `index`, `task_index`) -- no init_state or
+seed column. The true mapping is not recoverable from dataset metadata; it
+would need to come from the original LIBERO `.hdf5` -> LeRobot conversion
+source, or be found empirically per demo (a full 50-way sweep per demo,
+expensive).
+
+**Verdict for step 2:** `env` / success-detection / init-state mechanism are
+all confirmed sound -- LIBERO's own init-state selection genuinely
+reproduces full task success when recorded actions are replayed against the
+init_state they were actually collected from. The bug behind the originally
+reported symptom (0% success, arm approaches plausibly, never completes the
+grasp) is `xgap`'s own `within_task_index` -> LIBERO init_state mapping, not
+the environment, not LIBERO's success-checking, and -- per the earlier
+`lerobot-eval` sanity check -- not the shared infrastructure layer either.
+
+Finding the *general* mapping rule (so a full replay run uses every demo's
+correct init_state) is fix-stage work and out of scope for this diagnostic;
+recorded here as the concrete next action once fixing begins, not pursued
+further now.
+
+One loose thread worth flagging for that future work: in both *partial*
+successes above (init_state 4 and 24, demo 1), the approach to the second
+object visually tracked a plausible trajectory right up to the grasp -- not
+a trajectory that missed the area entirely. This is the same qualitative
+shape as the project's original reported symptom, observed here under an
+init_state already known NOT to be this demo's true match -- consistent
+with (not independent confirmation of) the coarse position-mismatch
+explanation, and does not on its own revive the orientation hypothesis.
 
 ## Design constraints encoded in this codebase (do not violate)
 
