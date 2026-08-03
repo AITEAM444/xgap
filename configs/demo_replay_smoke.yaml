@@ -33,7 +33,15 @@ control_modes:
   - relative
   - absolute
 
-control_freq: 10  # matches HuggingFaceVLA/libero's recorded fps -- see configs/demo_replay.yaml comment
+
+# CORRECTED (was 10): the dataset's meta/info.json advertises fps=10.0, and this config
+# originally trusted that as the recording rate. It's wrong -- confirmed from LIBERO's own
+# source (bddl_base_domain.py, env_wrapper.py, collect_demonstration.py, create_dataset.py,
+# all four independently) that demos are collected AND replayed 1:1 at control_freq=20, no
+# subsampling. The fps=10.0 label traces to a hardcoded literal in a third-party conversion
+# script (OpenPI's convert_libero_data_to_lerobot.py), not a real recording rate. See README
+# "control_freq was wrong from the start" for the full source trail.
+control_freq: 20
 
 init_states: true
 

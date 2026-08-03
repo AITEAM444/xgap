@@ -937,9 +937,116 @@ hypothesis (the starting layout is right) and strengthens `control_freq`
 (H1-adjacent) back to leading candidate -- a correct start followed by
 plausible-but-imprecise motion that misses by the second, more demanding
 manipulation is consistent with per-step actions being applied at the wrong
-scale/duration, not with a wrong scene. `configs/demo_replay_smoke_cf20.yaml`
-(same task/episode, `control_freq: 20` instead of `10`) is queued to test
-this directly -- not yet run.
+scale/duration, not with a wrong scene.
+
+## `control_freq` was wrong from the start (confirmed from LIBERO's own source)
+
+Before running the `control_freq=20` comparison, its premise was checked
+directly rather than guessed: what rate were the *original* LIBERO
+demonstrations actually collected/simulated at? `control_freq=10` (this
+project's default up to this point) was chosen by trusting
+`HuggingFaceVLA/libero`'s `meta/info.json` (`fps: 10.0`) as the recording
+rate. That trust was misplaced.
+
+**Confirmed from four independent places in LIBERO's own repository**
+(`Lifelong-Robot-Learning/LIBERO`), not inferred:
+
+- `libero/libero/envs/bddl_base_domain.py` -- `BDDLBaseDomain.__init__(...,
+  control_freq=20, ...)`.
+- `libero/libero/envs/env_wrapper.py` -- `OffScreenRenderEnv` (what
+  lerobot's `LiberoEnv` wraps) defaults to `control_freq=20`.
+- `scripts/collect_demonstration.py` -- the actual teleop collection
+  environment is built with `control_freq=20`.
+- `scripts/create_dataset.py` -- the script that produces LIBERO's
+  **released `.hdf5` files** sets `control_freq=20`, writes it into every
+  episode's own `env_args` attributes (self-documenting), and replays
+  `actions` **1:1** (`for j, action in enumerate(actions): env.step(action)`),
+  asserting state divergence `< 0.01` against the recorded states. This is
+  direct proof: one stored action == one 20 Hz `env.step()`, no substeps
+  folded in, no subsampling.
+
+robosuite's own environment default (`robosuite/environments/robot_env.py`)
+is also `control_freq=20` -- LIBERO doesn't override it, it just makes the
+inherited default explicit.
+
+**So where did `fps=10.0` come from?** Not from LIBERO. Traced to
+OpenPI's conversion script (`examples/libero/convert_libero_data_to_lerobot.py`),
+which **hardcodes `fps=10`** as a literal while iterating every recorded step
+with no stride -- i.e. it mislabels a straight 1:1, unmodified 20 Hz action
+sequence as "10 fps" in the output dataset's metadata. `HuggingFaceVLA/libero`,
+`lerobot/libero`, and `physical-intelligence/libero` all report the identical
+episode/frame counts (1693 episodes, 273465 frames), confirming they share
+this same conversion lineage and the same mislabeled metadata field --
+propagated forward, never actually verified against LIBERO's own source
+until now.
+
+**Fixed:** `control_freq` default changed `10 -> 20` in both
+`configs/demo_replay_smoke.yaml` and `configs/demo_replay.yaml`. This also
+happens to match what `lerobot`'s own `LiberoEnv`/`EnvConfig` already
+defaulted to (`fps: int = 20`) -- the project's earlier override to `10`,
+based on the mislabeled dataset field, was fighting lerobot's own correct
+default the whole time.
+
+### cf=10 vs cf=20: neither alone fully explains the failure, but together they localize it
+
+Single-episode, single-variable comparison
+(`configs/demo_replay_smoke_cf20.yaml` vs `configs/demo_replay_smoke.yaml`,
+same task, same episode, `relative` mode), watched directly and then
+compared numerically against the *actual recorded demo* (episode 8's own
+`observation.state`/`action`, fetched straight from the dataset -- see below):
+
+- **`control_freq=10`:** eef trajectory drifts increasingly from the
+  recorded demo's own trajectory over the episode (arm ends up carried well
+  outside the camera's framing by the end). The **first** grasp still
+  succeeds -- `gripper_qpos` closes only partially (~0.027, matching the
+  recorded demo's ~0.025 at the same point almost exactly), consistent with
+  a real object between the fingers. The **second** grasp closes fully to
+  ~0.0 -- nothing between the fingers -- and the episode ends with the arm
+  well off from where the recorded demo ends.
+- **`control_freq=20`:** overlaying our replay's logged `state_chunk` /
+  `action_chunk` directly against the recorded demo's own `observation.state`
+  / `action` for the same episode (`plot_episode_trajectory(...,
+  compare_state_chunk=..., compare_action_chunk=...)` -- see
+  `outputs/demo_replay_smoke_cf20/_local/videos/`) shows the eef position
+  trajectory (x, y, z) tracking the recorded demo **almost exactly** through
+  the first grasp phase, with only a small, slowly-growing gap afterward --
+  a dramatically better positional match than `control_freq=10`. And yet:
+  **neither grasp succeeds** -- `gripper_qpos` closes fully to ~0.0 both
+  times, where the recorded demo shows a partial close (~0.025) both times.
+  `action[:,6]` (the commanded gripper signal) is pixel-identical to the
+  recorded demo throughout -- the command sequence itself was never in
+  question, only what happens physically when it's executed.
+
+**This is the key new fact: `control_freq=20` gets eef position essentially
+right and still fails to grasp.** That decouples two previously-conflated
+questions -- "does the arm get to the right place" (yes, at cf=20) and "does
+a correctly-positioned gripper actually close on the object" (no, at either
+`control_freq`). The comparison plot only tracks position + `gripper_qpos`
+(`state_chunk`'s 5 dims -- see `replay.py`'s `_extract_state`), not
+**orientation** (the axis-angle/quaternion component of the real 8D
+`observation.state`, deliberately left out of `state_chunk` early on since
+it wasn't needed for the position-only checks up to this point). A gripper
+that arrives at the exactly correct x/y/z but a few degrees off in approach
+angle would grasp air exactly like this, at any `control_freq`.
+
+**Leading hypothesis now: orientation.** Not yet tested -- would need
+`state_chunk` (or a parallel field) extended to include `eef_quat`, plotted
+against the recorded demo's own orientation the same way position already
+is. Session paused here (mid-investigation) to consolidate findings before
+continuing.
+
+### Methodology note worth keeping: compare against the recorded demo directly, not just visually
+
+The `compare_state_chunk`/`compare_action_chunk` overlay technique used above
+-- fetch the *actual* recorded episode's `action`/`observation.state`
+directly from the dataset (same raw-parquet-column-read technique as the H3
+baseline, no `LeRobotDataset` needed for this) and plot it against our own
+replay's logged trajectory with `plot_episode_trajectory` -- turned out to be
+far more diagnostic than watching video alone (it caught the
+first-grasp-succeeds-second-doesn't asymmetry, and the
+position-matches-but-grasp-still-fails split, neither of which was obvious
+from video by itself). Worth reusing this pattern in step 3 for policy-vs-demo
+comparisons once there's a policy rollout to compare.
 
 ## Design constraints encoded in this codebase (do not violate)
 

@@ -37,11 +37,14 @@ control_modes:
   - relative
   - absolute
 
-# Matches HuggingFaceVLA/libero's recorded fps (meta/info.json: fps=10.0), NOT lerobot's
-# LiberoEnv/EnvConfig default of 20. See config.py comment -- a 10 vs 20 Hz mismatch would
-# apply every delta action at 2x the intended rate. Log this value in every episode row so it's
-# checkable after the fact.
-control_freq: 10
+# CORRECTED (was 10, matching the dataset's meta/info.json fps=10.0 label): that label is
+# wrong. Confirmed from LIBERO's own source (bddl_base_domain.py, env_wrapper.py,
+# collect_demonstration.py, create_dataset.py) that demos are collected and replayed 1:1 at
+# control_freq=20, no subsampling -- fps=10.0 traces to a hardcoded literal in a third-party
+# conversion script, not a real recording rate. See README "control_freq was wrong from the
+# start". Matches lerobot's own LiberoEnv/EnvConfig default. Logged in every episode row so
+# it's checkable after the fact regardless.
+control_freq: 20
 
 init_states: true  # must stay true for replay -- see config.py validation
 
