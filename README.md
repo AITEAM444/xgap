@@ -1201,6 +1201,80 @@ init_state already known NOT to be this demo's true match -- consistent
 with (not independent confirmation of) the coarse position-mismatch
 explanation, and does not on its own revive the orientation hypothesis.
 
+## Mapping search abandoned: wrong question, and demo replay already did its job
+
+Stopped chasing the general `within_task_index -> init_state` rule. Two
+things wrong with continuing it:
+
+1. **Init-state indices only look like a "match" -- they aren't necessarily
+   one.** Demo 0 succeeding at 2 of 50 candidates says those two are *close
+   enough* to reproduce success with this demo's open-loop actions, not that
+   either is the demo's actual recorded initial state. LIBERO's shipped
+   `init_states` array is a separate, fixed evaluation set -- there is no
+   guarantee the demo's true initial state is a member of it at all. A
+   "general mapping rule" between dataset episode order and this array may
+   simply not exist to be found.
+2. **Policy rollouts never use a demo's initial state in the first place.**
+   Standard LIBERO/lerobot evaluation steps through `init_states` in plain
+   order starting at index 0 -- which is exactly what the `lerobot-eval`
+   sanity check ran, and it hit 100%. The `within_task_index` mapping is a
+   concern specific to *demo replay* (this project's own diagnostic
+   harness), not to how SmolVLA (or any policy) will actually be evaluated.
+
+Demo replay's actual purpose -- checking whether env / success-detection /
+init-state selection are trustworthy -- is already answered: they are (see
+the sweep result above, and the `lerobot-eval` sanity check before it).
+Finding the exact demo-to-init_state correspondence would only matter if
+demo replay itself needs to run again at scale, which is not the current
+need.
+
+**If demo replay ever needs precise, guaranteed-correct init states again**,
+the reliable path is bypassing LIBERO's `init_states` array entirely:
+LIBERO's original `.hdf5` demo files store the actual per-timestep simulator
+state under each demo's own `states` dataset (`demo_X/states`); `states[0]`
+is the exact flattened MuJoCo state the demo was recorded from.
+Robosuite/LIBERO's own demo-playback tooling restores this via
+`env.sim.set_state_from_flattened(state)` followed by `env.sim.forward()`,
+rather than resetting through `init_states[idx % len(init_states)]` at all.
+This sidesteps the whole indexing question -- no mapping to find, no
+"close enough" ambiguity -- at the cost of needing the original `.hdf5`
+files (not just the LeRobot-converted parquet dataset) and one small,
+isolated, documented use of the underlying `env.sim` (not `libero`/`lerobot`
+monkey-patching -- calling a public robosuite method they don't wrap).
+**Noted here for later, not implemented now.**
+
+## Next: SmolVLA directly via `lerobot-eval`, no xgap code
+
+Bypassing this project's own harness entirely for the actual checkpoint
+under test (`HuggingFaceVLA/smolvla_libero`), same as the `pi05` sanity
+check above -- this is the more direct answer key `xgap`'s own N=1 result
+needed all along, and doubles as the Gate-1 baseline number.
+
+```
+!lerobot-eval \
+    --policy.path=HuggingFaceVLA/smolvla_libero \
+    --env.type=libero \
+    --env.task=libero_10 \
+    --env.task_ids=[0] \
+    --eval.batch_size=1 \
+    --eval.n_episodes=5 \
+    --env.max_parallel_tasks=1 \
+    > /content/lerobot_eval_smolvla.log 2>&1
+!tail -n 80 /content/lerobot_eval_smolvla.log
+```
+
+`--eval.n_episodes` is per-task (see the false alarm above) -- with
+`--env.task_ids=[0]` this is 5 episodes total, not 50. No
+`--policy.n_action_steps` override here on purpose: let the checkpoint's own
+config supply it rather than reusing `pi05`'s `10` by copy-paste.
+
+- **A usable, nonzero number** -> this is both the Gate-1 baseline and the
+  answer key for `xgap`'s own N=1 result. The original harness-vs-policy
+  question is answered without needing the mapping at all.
+- **~0%** -> the checkpoint itself (not the shared environment, confirmed
+  sound above) is the suspect. Next: `n_action_steps` sweep and wrist-camera
+  input verification (H1, H2).
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
