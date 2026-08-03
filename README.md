@@ -761,6 +761,19 @@ different code path. Fixed by passing `cache_dir` explicitly, resolved via
 `tempfile.gettempdir()` (always local) rather than a new env var that could
 suffer the same cross-cell-propagation issues already hit twice this session.
 
+### Twelfth: not a hang, `max_episodes` was applied too late
+
+The next run "looked stuck" after a couple of shard downloads completed. It
+wasn't hung — `load_task_demo_episodes` was calling `scan_shards_for_episodes`
+with the task's **full** episode set from `filter_episodes()` (e.g. all 33+),
+and only truncating to `max_episodes` (5, for the smoke config) *after* the
+scan returned. `scan_shards_for_episodes` stops as soon as every episode it
+was *asked* for is found -- asking for 33 when only 5 are needed means it
+correctly keeps working, just on ~28 episodes nobody needed yet, downloading
+far more shards than necessary. Fixed: cap to `max_episodes` **before**
+calling `scan_shards_for_episodes`, not after, so it stops as soon as the
+actually-needed subset is found.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

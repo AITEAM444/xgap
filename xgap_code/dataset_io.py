@@ -194,17 +194,23 @@ def load_task_demo_episodes(
             f"First few available tasks: {available[:5]}"
         )
 
-    target_episodes = set(meta.filter_episodes(lambda ep: ep["tasks"][0] == task_name))
-    if not target_episodes:
+    all_target_episodes = sorted(meta.filter_episodes(lambda ep: ep["tasks"][0] == task_name))
+    if not all_target_episodes:
         raise ValueError(
             f"No episodes found for task '{task_name}' in dataset '{repo_id}' "
             f"(task_index={task_index}, but filter_episodes matched nothing)."
         )
 
+    # Cap BEFORE scanning, not after: scan_shards_for_episodes stops as soon as every
+    # episode it was ASKED for is found, so asking for only the episodes we actually need
+    # (e.g. 5 for a smoke config) instead of every episode the task has (e.g. 33+) is what
+    # makes it stop early -- capping after the scan means it hunts down every episode for
+    # the task regardless of max_episodes, which is what made an earlier run look "stuck"
+    # (it wasn't -- it was still correctly finding the other ~28 episodes nobody asked for).
+    target_episodes = set(all_target_episodes if max_episodes is None else all_target_episodes[:max_episodes])
+
     frames_by_episode = scan_shards_for_episodes(repo_id, target_episodes)
     episode_indices = sorted(frames_by_episode.keys())
-    if max_episodes is not None:
-        episode_indices = episode_indices[:max_episodes]
 
     return [
         DemoEpisode(
