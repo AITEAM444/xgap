@@ -8,7 +8,7 @@ import multiprocessing
 import pytest
 import yaml
 
-from xgap_code.config import DemoReplayConfig
+from xgap_code.config import DemoReplayConfig, InitStateSweepConfig
 
 
 def _write_yaml(tmp_path, overrides=None):
@@ -79,3 +79,45 @@ def test_invalid_selection_unit_rejected(tmp_path):
     path = _write_yaml(tmp_path, {"selection_unit": "not_a_real_unit"})
     with pytest.raises(ValueError, match="invalid selection_unit"):
         DemoReplayConfig.from_yaml(path)
+
+
+def _write_sweep_yaml(tmp_path, overrides=None):
+    base = {
+        "experiment_name": "test_sweep",
+        "local_output_root": str(tmp_path / "local"),
+        "task_suite": "libero_10",
+        "task_id": 0,
+        "demo_within_task_index": 0,
+        "control_mode": "relative",
+        "control_freq": 20,
+        "sync_every_n_episodes": 5,
+        "checkpoint_name": "N/A_init_state_sweep",
+        "checkpoint_hash": "N/A_init_state_sweep",
+        "git_commit": "unknown",
+        "resume": True,
+    }
+    if overrides:
+        base.update(overrides)
+    path = tmp_path / "sweep_cfg.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    return str(path)
+
+
+def test_init_state_sweep_config_loads(tmp_path):
+    path = _write_sweep_yaml(tmp_path)
+    cfg = InitStateSweepConfig.from_yaml(path)
+    assert cfg.task_suite == "libero_10"
+    assert cfg.task_id == 0
+    assert cfg.control_freq == 20
+
+
+def test_init_state_sweep_config_rejects_unknown_field(tmp_path):
+    path = _write_sweep_yaml(tmp_path, {"bogus_field": 1})
+    with pytest.raises(ValueError, match="Unknown config fields"):
+        InitStateSweepConfig.from_yaml(path)
+
+
+def test_init_state_sweep_config_rejects_bad_control_mode(tmp_path):
+    path = _write_sweep_yaml(tmp_path, {"control_mode": "diagonal"})
+    with pytest.raises(ValueError, match="invalid control_mode"):
+        InitStateSweepConfig.from_yaml(path)

@@ -43,6 +43,24 @@ def get_libero_task_language(task_suite_name: str, task_id: int) -> str:
     return suite.get_task(task_id).language
 
 
+def get_num_init_states(task_suite_name: str, task_id: int) -> int:
+    """Number of candidate init states LIBERO has for (task_suite_name, task_id).
+
+    `LiberoEnv.reset()` selects `init_states[episode_index % len(init_states)]`
+    (src/lerobot/envs/libero.py) -- this is that same `len(init_states)`, via the
+    exact function `LiberoEnv` itself calls internally
+    (`lerobot.envs.libero.get_task_init_states`), not re-derived. Used by
+    scripts/sweep_init_states.py to test every candidate index directly rather
+    than continue guessing whether `within_task_index` picks the right one --
+    see README "leading hypothesis: orientation" for why this sweep was proposed
+    as a cheaper, more decisive test to run first.
+    """
+    from lerobot.envs.libero import get_task_init_states
+
+    suite = _get_benchmark_suite(task_suite_name)
+    return len(get_task_init_states(suite, task_id))
+
+
 def make_real_libero_env(
     *,
     task_suite_name: str,

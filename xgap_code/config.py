@@ -121,3 +121,54 @@ class DemoReplayConfig:
         if unknown:
             raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
         return cls(**raw)
+
+
+@dataclass
+class InitStateSweepConfig:
+    """Config for scripts/sweep_init_states.py: replay ONE demo episode's fixed
+    action sequence against EVERY candidate init_state for its task.
+
+    Different shape from DemoReplayConfig on purpose -- this isn't a matrix of
+    tasks/episodes/control_modes, it's one fixed demo swept across LIBERO's own
+    init_state indices, to test directly whether `within_task_index` (dataset_io.py)
+    picks the init_state LIBERO actually recorded this demo from. See README
+    "leading hypothesis: orientation" for why this sweep was proposed as a
+    cheaper, more decisive test to run before extending state_chunk to orientation.
+    """
+
+    experiment_name: str
+    local_output_root: str
+    task_suite: str
+    task_id: int
+
+    remote_output_root: str | None = None
+    dataset_repo_id: str = "HuggingFaceVLA/libero"
+    # Which demo (by within_task_index, dataset_io.py's sorted-episode-index ordering)
+    # to fix and sweep across init_states. 0 = the first/lowest-episode-index demo for
+    # this task -- e.g. libero_10 task 0 -> global episode_index 8, see README.
+    demo_within_task_index: int = 0
+
+    control_mode: str = "relative"
+    control_freq: int = 20  # see README "control_freq was wrong from the start"
+
+    sync_every_n_episodes: int = 5
+
+    checkpoint_name: str = "N/A_init_state_sweep"
+    checkpoint_hash: str = "N/A_init_state_sweep"
+    git_commit: str = "unknown"
+
+    resume: bool = True
+
+    def __post_init__(self):
+        if self.control_mode not in ("relative", "absolute"):
+            raise ValueError(f"invalid control_mode '{self.control_mode}'")
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "InitStateSweepConfig":
+        with open(path, encoding="utf-8") as f:
+            raw: dict[str, Any] = yaml.safe_load(f)
+        known = {k for k in cls.__dataclass_fields__}
+        unknown = set(raw) - known
+        if unknown:
+            raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
+        return cls(**raw)

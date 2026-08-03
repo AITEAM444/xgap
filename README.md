@@ -1048,6 +1048,40 @@ position-matches-but-grasp-still-fails split, neither of which was obvious
 from video by itself). Worth reusing this pattern in step 3 for policy-vs-demo
 comparisons once there's a policy rollout to compare.
 
+## Two cheaper, more decisive tests than continuing the orientation guess
+
+Before extending `state_chunk` to orientation, two tests were proposed that
+each bisect the remaining hypothesis space more directly, at lower cost.
+Both added to `notebooks/run_replay.ipynb`; neither run yet.
+
+**1. Sanity check against a KNOWN answer.** Run `lerobot`'s own
+`lerobot-eval` CLI against `lerobot/pi05_libero_finetuned` -- a checkpoint
+with a *published* number (96% on LIBERO-10, per lerobot's own
+`docs/source/libero.mdx`, "Reproducing published results"). This touches
+**zero lines of this project's code** and needs no 50GB dataset download
+(eval only needs the environment + the small policy checkpoint). If it
+reproduces ~96%, that confirms installation / MuJoCo / success-checking /
+init-state-selection are all fine at the infrastructure level, and narrows
+any remaining bug to this project's own harness specifically (init-state
+indexing or the action-injection path). If it comes back ~0%, the
+environment layer itself is broken independent of anything in `xgap_code/`
+-- no amount of harness fixing would show up as a result until that's
+addressed first. Twelve Colab round-trips so far have all stayed inside our
+own code; this is the first test of that premise itself.
+
+**2. Sweep every candidate `init_state` against one fixed demo.**
+`scripts/sweep_init_states.py` / `configs/sweep_init_states.yaml`: replay
+the SAME recorded action sequence (libero_10 task 0, dataset episode_index=8
+-- the same episode used throughout the comparisons above) against every
+`init_state` LIBERO has for this task (`harness.get_num_init_states()`, the
+exact function `LiberoEnv` itself calls internally -- not a guessed count).
+No new instrumentation, one loop, reuses `EpisodeStore` for resume/logging.
+If any index succeeds, `within_task_index` (`dataset_io.py`) is confirmed
+picking the wrong LIBERO init_state, and the successful index tells us the
+right one directly. If none succeed across the full set, init-state
+indexing is exonerated outright and orientation becomes the next thing to
+actually add and check, not just suspect.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

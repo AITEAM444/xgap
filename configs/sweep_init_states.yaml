@@ -1,0 +1,27 @@
+# Fix ONE demo's recorded actions (libero_10 task 0, the first/lowest-episode-index
+# demo -- dataset-global episode_index=8) and replay them against EVERY candidate
+# init_state LIBERO has for this task. See scripts/sweep_init_states.py and README
+# "leading hypothesis: orientation" for why this runs before extending state_chunk
+# to orientation -- it's cheaper and directly decisive either way.
+
+experiment_name: sweep_init_states_libero10_task0
+
+local_output_root: outputs/sweep_init_states_libero10_task0/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/sweep_init_states_libero10_task0
+
+dataset_repo_id: HuggingFaceVLA/libero
+
+task_suite: libero_10
+task_id: 0
+demo_within_task_index: 0  # -> dataset-global episode_index=8, see README
+
+control_mode: relative
+control_freq: 20  # see README "control_freq was wrong from the start"
+
+sync_every_n_episodes: 5
+
+checkpoint_name: N/A_init_state_sweep
+checkpoint_hash: N/A_init_state_sweep
+git_commit: unknown  # overwritten at runtime by `git rev-parse HEAD`
+
+resume: true
