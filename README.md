@@ -1319,6 +1319,112 @@ fails.
 !tail -n 80 /content/lerobot_eval_smolvla_nas10.log
 ```
 
+**Result: 0/5 again (`pc_success=0.0`).** H1 (execution granularity) is
+rejected -- 1 vs 10 makes no difference to success. `eval_ep_s` dropped from
+462s to 145.6s (~3.2x), on both a GPU upgrade (T4 -> A100) *and* a 10x
+reduction in policy calls per episode at the same time -- far less than the
+~10-30x a compute- or call-count-bound workload would show. Side finding:
+the real time bottleneck here is very likely env stepping/rendering, not
+the policy forward pass -- consistent with SmolVLA being a small model.
+Not pursued further (off the critical path for the actual diagnosis), but
+worth remembering if runtime budget becomes an issue later.
+
+Continuing the `n_action_steps` axis to `25`/`50` next would only ever
+produce a third "0/5, learned nothing new" data point -- there are two
+higher-information, still-untested axes first, reordered ahead of it below.
+`25`/`50` are kept as the fallback if both come back inconclusive.
+
+### Higher-priority than finishing the `n_action_steps` sweep
+
+**Does this checkpoint know `libero_10` at all?** The model card doesn't
+state which LIBERO suite(s) it was trained on -- genuinely unknown, not
+assumed. Running `libero_spatial` (a different suite, same
+`n_action_steps=10`) splits two very different explanations that a 0% on
+`libero_10` alone cannot: success here would mean "the checkpoint/policy
+loop works, `libero_10` specifically is the problem" (wrong config/data
+for this suite); another 0% narrows it to the checkpoint itself, suite
+notwithstanding. More decisive than another point on the `n_action_steps`
+axis either way.
+
+```
+!lerobot-eval \
+    --policy.path=HuggingFaceVLA/smolvla_libero \
+    --policy.n_action_steps=10 \
+    --env.type=libero \
+    --env.task=libero_spatial \
+    --env.task_ids=[0] \
+    --eval.batch_size=1 \
+    --eval.n_episodes=5 \
+    --env.max_parallel_tasks=1 \
+    > /content/lerobot_eval_smolvla_spatial_nas10.log 2>&1
+!tail -n 80 /content/lerobot_eval_smolvla_spatial_nas10.log
+```
+
+**Resolution mismatch, unresolved since Step 1.** The env's default render
+resolution is 360, the checkpoint declares 256 as its input, and there's a
+separate 512-padding setting on top of that (see the checkpoint config
+table near the top of this file) -- where (or whether) a resize actually
+reconciles these was never confirmed from source, only left as an open
+question. If it doesn't, the policy is seeing images shaped differently
+than it was trained on. Cheap to test directly: force the env to render at
+256 instead of relying on an implicit resize.
+
+First confirm the actual CLI field names before spending eval time on a
+typo'd flag (`harness.py`'s `make_real_libero_env` uses
+`observation_height`/`observation_width` as constructor kwargs -- check
+these are the same names `lerobot-eval`'s `--env.*` CLI exposes):
+
+```python
+import dataclasses
+from lerobot.envs.configs import LiberoEnv
+print([f.name for f in dataclasses.fields(LiberoEnv)])
+```
+
+Then, same baseline (`libero_10`, `n_action_steps=10`) with only resolution
+changed:
+
+```
+!lerobot-eval \
+    --policy.path=HuggingFaceVLA/smolvla_libero \
+    --policy.n_action_steps=10 \
+    --env.type=libero \
+    --env.task=libero_10 \
+    --env.task_ids=[0] \
+    --env.observation_height=256 \
+    --env.observation_width=256 \
+    --eval.batch_size=1 \
+    --eval.n_episodes=5 \
+    --env.max_parallel_tasks=1 \
+    > /content/lerobot_eval_smolvla_res256.log 2>&1
+!tail -n 80 /content/lerobot_eval_smolvla_res256.log
+```
+
+**Alongside success rate, log gripper-close duration for every run above,
+not just pass/fail.** Three 0/5 results in a row say nothing on their own,
+but whether the longest continuous closed-gripper run (see
+`xgap_code/gripper_metrics.longest_close_run`, and
+`DEMO_MIN_ACTUATION_LAG_STEPS=15` as the "a real demo grasp holds the
+gripper shut for 15-20+ consecutive steps" reference point measured
+earlier from real demo data) moves between conditions distinguishes "never
+attempts to close" from "closes but doesn't actually grasp" -- two
+completely different bugs. Not yet confirmed whether pure `lerobot-eval`
+already saves raw per-step actions anywhere (the eval output directory has
+at least `videos/`; unchecked whether there's also a rollout/actions file
+next to it, or whether the eval script itself exposes this only through
+its own dataset-saving path). Check before assuming a new script is
+needed:
+
+```
+!ls -la outputs/eval/*/*/
+!python -c "import lerobot.scripts.eval as e; print(e.__file__)"
+```
+
+If raw actions turn out not to be recoverable from a plain `lerobot-eval`
+run, the fallback is a small standalone script using lerobot's own
+`make_policy`/`LiberoEnv` directly (still not `xgap`'s harness) plus the
+existing `gripper_metrics.longest_close_run` function to log just this one
+number per episode.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
