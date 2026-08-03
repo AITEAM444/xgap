@@ -1,0 +1,29 @@
+# Second data point for the offset hypothesis raised by sweep_init_states.yaml's
+# result (demo_within_task_index=0 succeeded at init_state 3 and 23, not 0). Only
+# `demo_within_task_index` differs from that file -- used with
+# scripts/render_init_state_video.py (NOT sweep_init_states.py: we only want to
+# probe two specific candidate indices here -- 3+1=4 and 23+1=24 -- not sweep all
+# 50 again) to check whether the demo-index -> init_state mapping is a fixed
+# +3 offset or something else. See README "leading hypothesis: orientation".
+
+experiment_name: sweep_init_states_libero10_task0_demo1
+
+local_output_root: outputs/sweep_init_states_libero10_task0_demo1/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/sweep_init_states_libero10_task0_demo1
+
+dataset_repo_id: HuggingFaceVLA/libero
+
+task_suite: libero_10
+task_id: 0
+demo_within_task_index: 1
+
+control_mode: relative
+control_freq: 20  # see README "control_freq was wrong from the start"
+
+sync_every_n_episodes: 5
+
+checkpoint_name: N/A_init_state_sweep
+checkpoint_hash: N/A_init_state_sweep
+git_commit: unknown  # overwritten at runtime by `git rev-parse HEAD`
+
+resume: true
