@@ -46,11 +46,12 @@ parallel_envs_cap: 8
 sync_every_n_episodes: 1  # sync every episode at this tiny scale -- there are only 2
 
 # Now that demo replay actually completes and comes back 0/10 (both control_modes),
-# turn on frame capture to LOOK at what's happening -- see README "instrumented
-# rollout". Every 20 steps, a frame is saved; local disk only (outputs/*/videos/), not
-# synced to Drive -- meant for quick inspection within this Colab session (file
-# browser / manual download of a few PNGs), not long-term storage.
-video_sample_every_n_steps: 20
+# turn on video capture to WATCH what's happening -- see README "instrumented rollout".
+# 1 = every step, written as one outputs/*/videos/<episode>.mp4 per episode (~300 steps
+# at 10Hz -- videos come out ~30s each). Local disk only, not synced to Drive -- meant
+# for quick inspection within this Colab session (Colab's file browser plays mp4 inline),
+# not long-term storage.
+video_sample_every_n_steps: 1
 save_trajectory_plots: true
 
 checkpoint_name: N/A_demo_replay

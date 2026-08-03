@@ -31,10 +31,11 @@ def _extract_state(obs: dict) -> list[float]:
     return np.concatenate([eef_pos, gripper_qpos]).tolist()
 
 
-def _save_frame(frame: np.ndarray, path: Path) -> None:
+def _write_video(frames: list[np.ndarray], path: Path, fps: float) -> None:
     import imageio.v3 as iio
 
-    iio.imwrite(path, frame)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    iio.imwrite(path, np.stack(frames), fps=fps, codec="libx264")
 
 
 def replay_episode(
@@ -52,14 +53,18 @@ def replay_episode(
     checkpoint_hash: str,
     git_commit: str,
     config_file: str,
-    video_dir: Path | None = None,
-    video_sample_every_n_steps: int = 0,
+    video_path: Path | None = None,
+    video_sample_every_n_steps: int = 1,
+    video_fps: float | None = None,
 ) -> EpisodeRecord:
-    """video_dir/video_sample_every_n_steps: if a dir is given and the sample interval is
-    > 0, env.render() is called every N steps and saved as step_<i>.png under video_dir --
-    for visually checking whether the arm ever gets near the target object (step 2/3
-    instrumentation; see README "instrumented rollout"). Disabled by default (video_dir=None)
-    since it's extra render() calls -- only turn on for episodes you actually want to inspect."""
+    """video_path/video_sample_every_n_steps: if a path is given and the sample interval
+    is > 0, env.render() is called every N steps and all sampled frames are written as ONE
+    .mp4 at video_path (via imageio + ffmpeg, already in requirements.txt) -- for visually
+    checking whether the arm ever gets near the target object (step 2/3 instrumentation;
+    see README "instrumented rollout"). Disabled by default (video_path=None) since it's
+    extra render() calls -- only turn on for episodes you actually want to watch.
+    video_fps defaults to control_freq / video_sample_every_n_steps (i.e. plays back at
+    roughly the rate the episode actually ran at)."""
     timer = StageTimer()
     t_episode_start = time.perf_counter()
 
@@ -70,13 +75,11 @@ def replay_episode(
     # control_mode we requested -- see harness.read_actual_control_mode.
     actual_control_mode = read_actual_control_mode(env)
 
-    if video_dir is not None:
-        video_dir.mkdir(parents=True, exist_ok=True)
-
     success = False
     executed_actions: list[list[float]] = []
     executed_states: list[list[float]] = []
     video_frame_steps: list[int] = []
+    video_frames: list[np.ndarray] = []
     n_steps = 0
     for action in demo_actions:
         action = np.asarray(action, dtype=np.float32)
@@ -86,15 +89,19 @@ def replay_episode(
         executed_states.append(_extract_state(obs))
         step_idx = n_steps  # 0-indexed step just executed
         n_steps += 1
-        if video_dir is not None and video_sample_every_n_steps > 0 and step_idx % video_sample_every_n_steps == 0:
+        if video_path is not None and video_sample_every_n_steps > 0 and step_idx % video_sample_every_n_steps == 0:
             with timer.stage("render"):
-                frame = env.render()
-            _save_frame(frame, video_dir / f"step_{step_idx:05d}.png")
+                video_frames.append(env.render())
             video_frame_steps.append(step_idx)
         if info.get("is_success", False):
             success = True
         if terminated or truncated:
             break
+
+    if video_frames:
+        fps = video_fps if video_fps is not None else max(1.0, control_freq / video_sample_every_n_steps)
+        with timer.stage("render"):
+            _write_video(video_frames, video_path, fps=fps)
 
     execution_time = time.perf_counter() - t_episode_start
 

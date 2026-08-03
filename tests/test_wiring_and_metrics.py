@@ -96,12 +96,12 @@ def test_plot_episode_trajectory_with_comparison_series(tmp_path):
     assert out_path.exists()
 
 
-def test_replay_episode_saves_state_chunk_and_video_frames(tmp_path):
+def test_replay_episode_saves_state_chunk_and_video(tmp_path):
     env = MockLiberoEnv(max_steps=10, require_final_gripper_close=True)
     actions = np.zeros((10, 7), dtype=np.float32)
     actions[:, 6] = -1.0
     actions[-1, 6] = 1.0
-    video_dir = tmp_path / "videos" / "ep0"
+    video_path = tmp_path / "videos" / "ep0.mp4"
 
     record = replay_episode(
         env, actions,
@@ -109,15 +109,15 @@ def test_replay_episode_saves_state_chunk_and_video_frames(tmp_path):
         condition="demo_replay_relative", control_mode="relative", control_freq=10,
         checkpoint_name="N/A_demo_replay", checkpoint_hash="N/A_demo_replay",
         git_commit="deadbeef", config_file="configs/demo_replay.yaml",
-        video_dir=video_dir, video_sample_every_n_steps=3,
+        video_path=video_path, video_sample_every_n_steps=3,
     )
 
     assert len(record.state_chunk) == record.rollout_length == 10
     assert len(record.state_chunk[0]) == 5  # eef_pos(3) + gripper_qpos(2)
     # steps 0, 3, 6, 9 sampled (every 3rd, 0-indexed)
     assert record.video_frame_steps == [0, 3, 6, 9]
-    saved = sorted(p.name for p in video_dir.glob("*.png"))
-    assert saved == ["step_00000.png", "step_00003.png", "step_00006.png", "step_00009.png"]
+    assert video_path.exists()
+    assert video_path.stat().st_size > 0
 
 
 def test_replay_episode_no_video_when_disabled(tmp_path):

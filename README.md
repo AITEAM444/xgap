@@ -844,7 +844,7 @@ original reported symptom pattern (arm approaches plausibly, grasp fails).
 Secondary hypothesis: `control_freq=10` not matching the demos' true native
 collection frequency (see the `control_freq` config comment).
 
-### Instrumentation added to investigate this (not yet run)
+### Instrumentation added to investigate this (not yet run against a real sim)
 
 Per request, added actual instrumented-rollout capability rather than
 guessing further from summary statistics alone:
@@ -852,27 +852,38 @@ guessing further from summary statistics alone:
 - `logging_schema.py`: `state_chunk` (per-step `[eef_pos_x,y,z,
   gripper_qpos_0,1]`, from the raw env observation -- not the policy-facing
   8D `observation.state`, which also needs quat→axis-angle and isn't needed
-  for this check) and `video_frame_steps` (which steps got a saved frame).
-- `replay.py`: `replay_episode()` now accepts `video_dir` /
-  `video_sample_every_n_steps` -- every Nth step, `env.render()` is called
-  and saved as `step_<i>.png`. Off by default (extra render() calls).
+  for this check) and `video_frame_steps` (which steps got a sampled frame).
+- `replay.py`: `replay_episode()` now accepts `video_path` /
+  `video_sample_every_n_steps` -- every Nth step, `env.render()` is called;
+  all sampled frames for the episode are written as **one `.mp4`** at
+  `video_path` (via `imageio[ffmpeg]`, already in `requirements.txt`), not a
+  folder of PNGs (an earlier version did that -- one video file per episode
+  is easier to actually watch, which was the point). Playback fps defaults to
+  `control_freq / video_sample_every_n_steps`, i.e. roughly real-time. Off by
+  default (extra render() calls).
 - `plots.py`: `plot_episode_trajectory()` — eef position (x,y,z), gripper
   qpos, and `action[:,6]` over time for one episode, with an optional
   second (`compare_*`) series overlaid for later policy-vs-demo comparison.
 - `config.py` / `configs/demo_replay_smoke.yaml`: `video_sample_every_n_steps:
-  20` (on for the smoke config -- this is exactly the run that needs looking
-  at) and `save_trajectory_plots: true` (cheap, on everywhere). Both local
-  disk only (`outputs/*/videos/`), not synced to Drive -- meant for
-  interactive inspection within the session (file browser / downloading a
-  few PNGs), not long-term storage.
+  1` (every step, on for the smoke config -- this is exactly the run that
+  needs watching; ~300-step episodes at 10Hz -> ~30s videos) and
+  `save_trajectory_plots: true` (cheap, on everywhere). Both local disk only
+  (`outputs/*/videos/`), not synced to Drive -- meant for interactive
+  inspection within the session (Colab's file browser plays `.mp4` inline),
+  not long-term storage.
 
-All new logging/plotting/frame-saving code is covered by local tests against
-`MockLiberoEnv` (`tests/test_wiring_and_metrics.py`) since it only needed
-`env.step()`/`env.render()` and matplotlib, no simulator. What's NOT yet
-verified: whether real `LiberoEnv.render()` frames actually show the arm
-relative to the object clearly enough to be useful, and whether `state_chunk`
-correctly reflects real (not mock) `robot_state` values. That needs an actual
-Colab run of the updated smoke config.
+All new logging/plotting/video-writing code is covered by local tests
+against `MockLiberoEnv` (`tests/test_wiring_and_metrics.py`, 13 tests) --
+including the actual `imageio[ffmpeg]` mp4-encoding path, installed and
+verified locally this session specifically because writing video is exactly
+the kind of thing that silently degrades to a different codec/plugin when a
+dependency is missing (it did, once, locally: without `imageio-ffmpeg`
+installed, `imageio` silently fell back to a TIFF writer and crashed on the
+`fps` kwarg -- caught here, not in Colab). What's still NOT verified locally
+(needs lerobot/libero, Linux-only): whether real `LiberoEnv.render()` frames
+actually show the arm relative to the object clearly enough to be useful, and
+whether `state_chunk` correctly reflects real (not mock) `robot_state`
+values. That needs an actual Colab run of the updated smoke config.
 
 ## Design constraints encoded in this codebase (do not violate)
 

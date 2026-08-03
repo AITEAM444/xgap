@@ -78,9 +78,10 @@ class DemoReplayConfig:
     sync_every_n_episodes: int = 5
 
     # Instrumentation (step 2/3 diagnostics -- see README "instrumented rollout"). 0 =
-    # disabled. Every N steps, env.render() is called and saved under
-    # <output_root>/videos/<episode_key>/step_<i>.png -- extra render() calls, so off by
-    # default; turn on for a small run when you actually want to look at frames.
+    # disabled. Every N steps, env.render() is called; all sampled frames for an episode
+    # are written as one <output_root>/videos/<episode_key>.mp4 (1 = every step, for a
+    # smooth watchable video). Extra render() calls, so off by default; turn on for a
+    # small run when you actually want to watch what happened.
     video_sample_every_n_steps: int = 0
     # Per-episode eef-position / gripper-qpos / gripper-action plot, saved under
     # <output_root>/videos/<episode_key>.png. Cheap (matplotlib on already-logged data,

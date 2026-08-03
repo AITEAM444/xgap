@@ -101,7 +101,7 @@ def _run_one_episode(
     # within the same Colab session, e.g. via the file browser or downloading a few files,
     # not long-term storage. See README "instrumented rollout".
     videos_root = Path(cfg.local_output_root) / "videos"
-    video_dir = videos_root / episode_key_str if cfg.video_sample_every_n_steps > 0 else None
+    video_path = videos_root / f"{episode_key_str}.mp4" if cfg.video_sample_every_n_steps > 0 else None
 
     record = replay_episode(
         env,
@@ -117,7 +117,7 @@ def _run_one_episode(
         checkpoint_hash=cfg.checkpoint_hash,
         git_commit=git_commit,
         config_file=config_file,
-        video_dir=video_dir,
+        video_path=video_path,
         video_sample_every_n_steps=cfg.video_sample_every_n_steps,
     )
     env.close()
