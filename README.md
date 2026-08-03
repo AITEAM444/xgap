@@ -1082,6 +1082,51 @@ right one directly. If none succeed across the full set, init-state
 indexing is exonerated outright and orientation becomes the next thing to
 actually add and check, not just suspect.
 
+## Sanity check result: infrastructure is confirmed sound, the bug is ours
+
+Ran the `lerobot-eval` sanity check for real. Two things worth recording,
+both caught from an actual run, neither predicted:
+
+**`--env.task=libero_10` evaluates all 10 tasks in the suite, not "5
+episodes."** `--eval.n_episodes=5` is *per task*, and `--env.task_ids` was
+not set to restrict it -- so this ran 5 episodes × 10 tasks = up to 50
+episodes, not the 5 the notebook cell's own description implied. Worth
+fixing the cell (`--env.task_ids=[0]` to actually get a quick 5-episode
+check) before running this again.
+
+**The `running_success_rate=0.0%` that caused real alarm mid-run was a
+false signal, twice over:**
+
+1. `Stepping through eval batches: N/5` is a **per-task** progress bar --
+   every time it finishes one task's 5 episodes and starts the next, the
+   displayed `running_success_rate` resets to reflect zero completed
+   episodes *of the new task*, not zero overall. Reading "0.0%" at 25%/50%
+   of a bar that had just reset looked like an ongoing failure; it was a
+   fresh counter.
+2. Piping `lerobot-eval`'s tqdm output to a file (the log-file redirect
+   fix, above) produces a new line per step update rather than overwriting
+   in place -- a 1.3MB, 10709-line log from under two full tasks' worth of
+   steps. Skimming the tail alone (or even the last ~200 lines) can land
+   inside an in-progress episode's step-by-step climb from 0 to 520, which
+   *always* shows 0.0% until that episode finishes -- structurally, not as
+   a finding. Grepping the whole file for `100%` (the per-task completion
+   marker) was what actually resolved it.
+
+**Actual result, from the completed tasks:** every task that finished ran
+5/5 episodes at **`running_success_rate=100.0%`** (confirmed across 4
+completed tasks before the run was stopped, i.e. 20/20 episodes). This
+answers the sanity check decisively: **installation, MuJoCo, rendering,
+success-checking, and init-state selection are all sound at the
+infrastructure level.** Twelve-plus round-trips of assuming the bug must be
+somewhere in this project's own harness were operating on the right
+premise -- this is the first time that premise was actually tested rather
+than assumed, and it holds. The bug is confined to `xgap_code` (most likely
+`within_task_index` or the action-injection path) or to something specific
+about how the SmolVLA checkpoint under test differs from
+`pi05_libero_finetuned` -- not the shared environment layer underneath both.
+
+Next: the init-state sweep (`scripts/sweep_init_states.py`), still queued.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
