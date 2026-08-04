@@ -1840,8 +1840,14 @@ Random candidate comparison (`n_decision_points`/`exec_horizon`/
 `selection_unit`, see "Design constraints" below) -- if restoring a saved
 simulator state and replaying the same action doesn't reproduce the same
 outcome, comparing candidates branched from a shared decision point is
-meaningless. Can run independently of, and at the same time as, the Gate-1
-measurement above.
+meaningless. **Run this BEFORE the Gate-1 measurement, not in parallel
+with it** -- both need the GPU (Colab gives one), and this is the
+cheaper, more urgent question: a bad result here could mean the Gate-1
+number itself isn't as precise as assumed (episodes near a decision
+boundary could flip on restore noise), so it's worth knowing first. If
+the Gate-1 cell is already running, stop it -- `resume: true` means
+nothing already completed is lost, re-running the same cell later
+continues rather than restarts.
 
 Added `harness.get_sim_state`/`harness.restore_sim_state`
 (`env.sim.get_state().flatten()` / `sim.set_state_from_flattened()` +
@@ -1894,28 +1900,45 @@ given the TRUE internal solver state, but this flattened snapshot may not
 capture all of it, so the very next physics step after a restore can
 converge slightly differently even from "the same" saved state.
 
-This single-step result doesn't answer the question that actually matters
-for candidate comparison: does this small per-step gap compound, stay
-flat, or shrink over an `exec_horizon`-scale rollout? Extended
-`test_state_restore_determinism.py` to compare EVERY step of a fixed
-`--n-compare-steps`-length action sequence on both branches (not just one
-step), reporting per-step `state_max_abs_diff`/`image_pct_differing`
-arrays plus a step-0-vs-last-step growth ratio, so a compounding gap
-(ratio ≫ 1x) is directly visible against a flat one (ratio ~1x).
+**The single-step result's reward-matched-5/5 is not reassuring on its
+own.** LIBERO's success signal is binary/coarse -- a few mm of object
+displacement doesn't register at all -- so it cannot detect whether the
+observed residual matters. **The only metric that actually matters: is
+restore-noise small RELATIVE TO the state divergence a genuinely
+different candidate action would produce**, not small in some absolute
+sense. Rewrote `test_state_restore_determinism.py` to measure both
+directly from the same saved state:
+
+- **signal**: two DIFFERENT fixed action chunks (`chunk_1`, `chunk_2`,
+  distinct RNG streams -- as if two different policy/world-model
+  proposals from the same decision point) run for `--n-compare-steps`
+  each; the resulting state divergence between them is what a real
+  candidate comparison would be measuring.
+- **noise**: `chunk_1` run twice from the same saved state (once as
+  branch A, restore, then again as branch C) -- the resulting divergence
+  is restore-imprecision alone, same action chosen both times.
+
+`ratio = signal / noise` at every step. Threshold this project is using
+(from the same planning that flagged this as the hardest implementation
+element): **~100x is practically safe, ~10x is risky, ~1x means candidate
+comparison isn't meaningful at all** -- this ratio, not either raw
+number, is Test 2's actual pass/fail criterion.
 
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/test_state_restore_determinism.py \
     --task-suite libero_spatial --task-id 0 --n-trials 3 --n-compare-steps 10
 ```
 
-- **Flat (ratio ~1x)** -> the gap is a fixed per-restore artifact, not
-  compounding error -- likely tolerable for candidate comparison at
-  realistic `exec_horizon` lengths; note it and proceed.
-- **Growing (ratio ≫ 1x)** -> the small per-step gap compounds into
-  something that could flip which candidate "wins" over a real rollout --
-  needs fixing (most likely candidate: finding a way to also
-  save/restore `qacc_warmstart`, or whatever else `MjSimState` omits)
-  before Oracle/World-model/Random work can trust its own comparisons.
+- **min ratio ≥ 100x** -> practically safe; proceed to building
+  Oracle/World-model/Random condition logic on the save/restore mechanism
+  as-is.
+- **min ratio 10-100x** -> risky -- candidate comparisons whose real
+  signal happens to be small could be unreliable; worth root-causing
+  before depending on it (most likely candidate: finding a way to also
+  save/restore `qacc_warmstart`, or whatever else `MjSimState` omits).
+- **min ratio < 10x** -> candidate comparison does not work at this noise
+  level -- must be fixed before any Oracle/World-model/Random work
+  starts.
 
 ## Design constraints encoded in this codebase (do not violate)
 
