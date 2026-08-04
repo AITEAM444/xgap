@@ -1360,6 +1360,27 @@ axis either way.
 !tail -n 80 /content/lerobot_eval_smolvla_spatial_nas10.log
 ```
 
+**Result: 3/5 (`pc_success=60.0`), episodes 0/2/4 succeeded, 1/3 failed.**
+Decisive: the checkpoint/policy/env/`lerobot-eval` loop all genuinely work
+-- this rules out "the checkpoint itself is broken" outright. `libero_10`
+specifically is where this checkpoint fails, not SmolVLA in general. This
+also weakens the resolution hypothesis below somewhat before even running
+it: `libero_spatial` used the exact same default (360) render resolution
+as every `libero_10` run above, and still succeeded 60% of the time -- if
+a 360-vs-256 mismatch were catastrophic, it should tank every suite
+roughly equally, not just this one. Still worth running (cheap, already
+queued, and `libero_10`'s specific scenes could still interact with it
+differently), just no longer the leading theory.
+
+Remaining candidate explanations for the `libero_10`-specific 0%: (a)
+genuine task difficulty -- `libero_10` (LIBERO-Long) tasks are two-stage
+("put BOTH X and Y in the basket"), materially harder than `libero_spatial`'s
+single-stage tasks, and the checkpoint may simply be weak on long-horizon
+composition rather than buggy; (b) something specific to `libero_10`'s
+scenes/objects (camera framing, clutter, the multi-object BDDL layout) that
+doesn't show up in `libero_spatial`. Neither is confirmed yet -- flagging
+both rather than picking one without evidence.
+
 **Resolution mismatch, unresolved since Step 1.** The env's default render
 resolution is 360, the checkpoint declares 256 as its input, and there's a
 separate 512-padding setting on top of that (see the checkpoint config
@@ -1379,6 +1400,14 @@ import dataclasses
 from lerobot.envs.configs import LiberoEnv
 print([f.name for f in dataclasses.fields(LiberoEnv)])
 ```
+
+**Confirmed:** `observation_height`/`observation_width` are real
+`LiberoEnv` fields (full list: `task`, `fps`, `features`, `features_map`,
+`max_parallel_tasks`, `disable_env_checker`, `task_ids`, `episode_length`,
+`obs_type`, `render_mode`, `camera_name`, `init_states`,
+`camera_name_mapping`, `observation_height`, `observation_width`,
+`is_libero_plus`, `control_mode`) -- the eval command below uses the right
+flag names.
 
 Then, same baseline (`libero_10`, `n_action_steps=10`) with only resolution
 changed:
