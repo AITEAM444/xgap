@@ -1555,6 +1555,72 @@ specifically is hard for this checkpoint (undertrained on long-horizon
 composition vs. something about `libero_10`'s scenes) -- that's a
 model-training/fine-tuning question, not an environment-diagnosis one.
 
+## Open thread that could overturn the verdict above: is the policy's actual input mirrored?
+
+Raised after the verdict above was already written: object text ("Milk",
+"Orange Juice") in the `libero_10` video frames reads as a mirror image.
+If the tensor actually fed to `policy.select_action()` is left-right
+flipped relative to what the checkpoint was trained on, that alone would
+explain the observed grasp failures -- and would mean the "checkpoint
+weakness" verdict above is wrong.
+
+**Critical distinction: the saved `.mp4` path and the policy-input path are
+different code paths.** The video comes from `env.render()` inside
+`eval_policy()`'s `render_callback`; the policy sees whatever
+`preprocess_observation() -> env_preprocessor() -> preprocessor()`
+produces from `env.step()`/`env.reset()`'s own returned observation. A flip
+in one does not imply a flip in the other -- must be checked directly,
+not inferred from the video.
+
+**Important prior constraint on the answer:** `pi05_libero_finetuned` hit
+20/20 on this exact `lerobot-eval` CLI, this exact `libero_10` env config.
+If policy input were mirrored, `pi05` should have failed too -- it didn't.
+So the leading expectation is that the mirroring is confined to the video
+save path (`env.render()`'s own convention, unrelated to what the policy
+receives), not the policy input. But this is an expectation, not a
+result -- confirming it either way is required; if the policy input turns
+out to be mirrored too, the verdict above does not hold and needs to be
+revisited (possibly explained by `pi05` being more flip-robust, or
+something else not yet considered).
+
+Added `scripts/check_image_mirroring.py`: builds the observation the exact
+same way `lerobot-eval`'s own `rollout()` does internally (same public
+functions -- `make_env`, `make_policy`, `make_pre_post_processors`,
+`make_env_pre_post_processors`, `preprocess_observation` -- called
+directly in the same order, verified from `lerobot/scripts/lerobot_eval.py`
+source rather than reimplemented from guesswork; no monkey-patching), for
+one `env.reset()` with no stepping, and dumps the resulting per-camera (
+`image`=agentview, `image2`=wrist) tensors as PNG -- this is what the
+policy actually receives, not a re-render for video. Also added
+`dataset_io.fetch_reference_frame_images()` (same column-projection,
+never-touch-the-whole-dataset pattern as the rest of that module) to pull
+one frame of the same task/episode used throughout this project's
+comparisons directly from `HuggingFaceVLA/libero`, as the ground-truth
+orientation to compare against -- the standard here is "matches training
+data's orientation", not "looks upright to a person".
+
+Config construction uses `draccus.parse(EvalPipelineConfig, args=[...])`
+directly (the same CLI args as the `n_action_steps=10` baseline run) --
+unverified against source before use (unlike everything else in this
+project), flagged here explicitly; if it errors, `lerobot.configs.parser`'s
+actual source needs to be read to find the correct non-CLI entry point
+instead of guessing further.
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/check_image_mirroring.py \
+    --out-dir /content/drive/MyDrive/xgap/outputs/mirror_check
+```
+
+(Output pinned to Drive directly, not `/content/`, per the earlier lesson
+about `lerobot-eval`'s own `--output_dir` not surviving a runtime reset.)
+
+Four PNGs land in `outputs/mirror_check/`: `dataset_reference_observation_images_image.png`,
+`dataset_reference_observation_images_image2.png`,
+`policy_input_observation_images_image.png`,
+`policy_input_observation_images_image2.png` -- compare each camera's
+policy-input PNG against its matching dataset-reference PNG, side by side,
+for a left-right flip.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

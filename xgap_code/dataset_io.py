@@ -175,6 +175,43 @@ def scan_shards_for_episodes(
     return frames_by_episode
 
 
+def fetch_reference_frame_images(
+    repo_id: str, episode_index: int, frame_index: int = 0
+) -> dict[str, bytes]:
+    """Fetch ONE frame's raw encoded image bytes (`observation.images.<cam>`) for a
+    specific (episode_index, frame_index) -- for visual sanity checks (e.g. comparing
+    training-data image orientation against what a policy actually receives at eval
+    time), not for bulk access. This dataset embeds images directly in the data
+    parquet files as `struct<bytes: binary, path: string>` (confirmed in this
+    module's docstring, CORRECTION 5) -- reads only the two image-struct columns for
+    matching rows via the same column-projection pattern as scan_shards_for_episodes,
+    never materializing the whole dataset or even a whole shard's images.
+
+    Returns {camera_key: png/jpeg-encoded bytes}, e.g. {"observation.images.image":
+    b"...", "observation.images.image2": b"..."}.
+    """
+    from huggingface_hub import hf_hub_download
+
+    shard_paths = list_shard_paths(repo_id)
+    columns = ["observation.images.image", "observation.images.image2", "episode_index", "frame_index"]
+
+    for shard_path in shard_paths:
+        local_path = hf_hub_download(repo_id, shard_path, repo_type="dataset", cache_dir=_LOCAL_SHARD_CACHE_DIR)
+        table = pq.read_table(local_path, columns=columns)
+        ep_col = table.column("episode_index").to_numpy()
+        hits = np.isin(ep_col, [episode_index])
+        if not hits.any():
+            continue
+        sub = table.filter(hits).to_pydict()
+        for i, fr in enumerate(sub["frame_index"]):
+            if int(fr) == frame_index:
+                return {
+                    "observation.images.image": sub["observation.images.image"][i]["bytes"],
+                    "observation.images.image2": sub["observation.images.image2"][i]["bytes"],
+                }
+    raise ValueError(f"Frame (episode_index={episode_index}, frame_index={frame_index}) not found in '{repo_id}'.")
+
+
 def load_task_demo_episodes(
     repo_id: str, task_name: str, max_episodes: int | None = None
 ) -> list[DemoEpisode]:
