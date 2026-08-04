@@ -146,6 +146,7 @@ def main() -> None:
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
     out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     dump_reference_images(out_dir)
     dump_policy_input_images(out_dir)
