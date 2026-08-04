@@ -33,8 +33,6 @@ Colab run -- if the first run errors here, this bridging logic is the first
 place to look, not the reused lerobot functions themselves.
 """
 
-from __future__ import annotations
-
 import time
 from typing import Any
 
