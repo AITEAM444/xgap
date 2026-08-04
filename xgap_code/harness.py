@@ -71,17 +71,21 @@ def make_real_libero_env(
     observation_height: int = 256,
     observation_width: int = 256,
 ):
-    """Construct a single (non-vectorized) LiberoEnv tied to a specific demo's
-    recorded init state.
+    """Construct a single (non-vectorized) LiberoEnv at a specific init_state.
 
-    `demo_episode_index_within_task` must be the index of this episode WITHIN
-    its task's init-state ordering (`task_suite.get_task_init_states()[idx %
-    len(init_states)]`), NOT a dataset-global episode_index. Whether
-    HuggingFaceVLA/libero's per-task episode ordering matches LIBERO's own
-    init-state ordering 1:1 is an assumption that must be verified empirically
-    in Colab -- see xgap_code/dataset_io.py docstring. High replay success is
-    itself supporting evidence; if control_mode and init_states are both
-    correct yet replay success is low, this mapping is the next suspect.
+    `demo_episode_index_within_task` is the index INTO LIBERO's own
+    init-state ordering for this task (`task_suite.get_task_init_states()[idx
+    % len(init_states)]`), NOT a dataset-global episode_index. Two different
+    callers feed two different things through this same parameter:
+      - Demo replay (replay.py): a value derived from dataset_io's
+        within_task_index, trying to match a SPECIFIC recorded demo's actual
+        init state. That mapping was investigated at length and abandoned as
+        not generally solvable (see README "Mapping search abandoned") --
+        not relevant outside demo replay.
+      - Live policy rollout (policy_rollout.py): plain STANDARD order --
+        episode_seed passed directly, 0/1/2/... -- matching
+        `lerobot-eval`'s own `init_states[episode_index % len(init_states)]`
+        convention. No demo, no dataset_io involved; this is the normal case.
 
     Imports lerobot/libero lazily so this module -- and MockLiberoEnv below --
     can be imported and unit-tested without either installed.

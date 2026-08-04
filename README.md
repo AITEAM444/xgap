@@ -1634,6 +1634,139 @@ now directly confirmed rather than assumed. **This closes the one thread
 that could have overturned the checkpoint-weakness verdict above -- it
 stands.**
 
+## Decision: the August gate moves to LIBERO-Spatial
+
+LIBERO ships several task suites; this project has used two:
+`libero_spatial` (single object, single pick-and-place) and `libero_10` /
+LIBERO-Long (two objects, sequential -- e.g. "put both the alphabet soup
+and the tomato sauce in the basket").
+
+**Why the proposal originally picked LIBERO-Long: a ceiling-effect
+argument.** This project needs to show performance degrading under
+pressure -- impossible if the baseline is already near 100%. The proposal
+argued easier suites like Spatial were saturated at SOTA (>98%), with
+headroom concentrated in long-horizon tasks, and cited literature to
+support it.
+
+**The proposal's own criterion, applied to what was actually measured,
+reverses the choice.** The proposal already acknowledged even Long
+approaches saturation for top models (pi0.5 92.4%, TwinBrainVLA 95.4%,
+VLA-GSE 96.8%) -- and judged "saturated" against the policy actually being
+used, not the best model in the world, citing small-model numbers (OpenVLA
+53.7%, Diffusion Policy 64.8%) as evidence there's still headroom for a
+small policy. That's also why the proposal picked a small model
+(SmolVLA) in the first place. Applying that same standard to what this
+project actually measured:
+
+| | LIBERO-Long | LIBERO-Spatial |
+|---|---|---|
+| top models | 92-97% | >98% |
+| SmolVLA (measured this session) | 0% | 60% |
+| usable as an experiment substrate? | no -- can't complete the task at all | yes |
+
+SmolVLA's 60% on Spatial sits right inside the small-model headroom band
+(53.7-64.8%) the proposal already used to justify small models having room
+to move. It clears Gate 1 (would only fail if ≥90%) with room to spare, and
+is not a ceiling -- there's space to observe degradation under pressure.
+Long, by contrast, has no working baseline at all: SmolVLA cannot complete
+the task, so there is nothing for `xgap`'s intervention conditions to be
+measured against. This isn't overturning the proposal's criterion --
+it's applying that exact criterion to real measured numbers, which the
+proposal's own >98%-ceiling framing (a SOTA-relative claim) hadn't yet been
+tested against.
+
+**One acknowledged loss.** Part of the original case for Long was its
+connection to WoVR's long-horizon error-accumulation framing, which the
+planned H-step rollout design (`exec_horizon`, §6.1④) was meant to probe --
+Spatial's shorter episodes leave less room to push `H` large. The (N, H)
+2D sweep is an ICRA-scope extension, though; the August gate only needs
+the N axis. If H-axis headroom becomes necessary later, Long is the
+candidate to return to -- after additional fine-tuning of the checkpoint,
+since a 0%-baseline suite still won't be usable as-is.
+
+**How this gets written up:** "this checkpoint does not reliably complete
+long-horizon two-stage tasks, so it was excluded from the August gate" --
+more honest than forcing a measurement where there's no working baseline
+to measure from. Long carries forward as an extension experiment, not a
+dropped thread.
+
+**Backup-suite discussion also flips.** The original backup candidate was
+`libero_goal`/LIBERO-Plus, considered in case Long turned out too easy.
+The real failure mode was the opposite (too hard). With Spatial as the
+main suite, the backup question becomes "what if Spatial turns out too
+easy" instead, with Long or `libero_goal` as candidates then.
+
+## Harness parity check: does xgap's own env-construction path work?
+
+Before scaling up to the real Gate-1 measurement (3-5 tasks × 15-20
+episodes on `libero_spatial`), one thing needed checking first: does
+`xgap`'s OWN harness (`harness.make_real_libero_env`) reproduce the same
+real-world result as the official `lerobot-eval` CLI (which uses lerobot's
+own `make_env`)? This matters because the actual Gate-1/N/H experiments
+need control that `lerobot-eval`'s CLI doesn't expose --
+`n_decision_points`/`exec_horizon`/`selection_unit`, the Oracle/World-model/
+Random condition branching (see "Design constraints" below) -- so `xgap`'s
+own harness has to be the execution path eventually, and its correctness
+shouldn't be assumed just because the demo-replay half of it (env
+construction, success detection) was already validated in a different
+context (the init-state sweep, the sanity check).
+
+**Live policy rollout is new -- everything before this point only replayed
+pre-recorded demo actions.** Added `xgap_code/policy_rollout.py`
+(`rollout_policy_episode` + `build_policy_and_processors`) and
+`scripts/run_policy_rollout.py`. Policy loading and observation
+preprocessing reuse lerobot's own public functions directly (`make_policy`,
+`make_pre_post_processors`, `make_env_pre_post_processors`,
+`preprocess_observation`) -- the same functions `lerobot-eval`'s own
+`rollout()` calls internally, and the same construction pattern
+`scripts/check_image_mirroring.py` already proved works end to end in this
+exact Colab environment (that script's `_build_eval_cfg`-equivalent logic
+is now factored into `build_policy_and_processors`). The env itself is
+`harness.make_real_libero_env`, not lerobot's `make_env` -- that's the
+whole point of this check.
+
+**Init-state selection is STANDARD order, not the demo-matching remap.**
+`episode_seed` (0, 1, 2, ...) is passed directly as
+`demo_episode_index_within_task`, matching `lerobot-eval`'s own
+`init_states[episode_index % len(init_states)]` convention. This is a
+different use of that same harness parameter than demo replay's -- see
+`harness.make_real_libero_env`'s updated docstring. No `dataset_io`, no
+recorded demo actions, no init-state-matching question at all here; the
+policy generates its own actions from live observations.
+
+**One flagged, unverified risk.** lerobot's `preprocess_observation()` /
+`env_preprocessor()` / `preprocessor()` are designed for lerobot's own
+BATCHED `gym.vector.VectorEnv` (see `rollout()`'s type hint) -- but
+`harness.make_real_libero_env` returns a single, UNBATCHED env (matching
+`replay.py`'s existing usage throughout this project: plain `(7,)` actions,
+unbatched obs dict). `policy_rollout.py` manually adds/removes a batch
+dimension of size 1 around the shared preprocessing calls to bridge this.
+Not yet verified against a real Colab run -- flagged in the module
+docstring as the first place to look if this errors, rather than assumed
+correct.
+
+`configs/policy_rollout_libero_spatial_smoke.yaml`: `libero_spatial` task
+0, 5 episodes, `HuggingFaceVLA/smolvla_libero`, one `policy.select_action()`
+call per env step (matches the project's own confirmed n_action_steps=1-
+vs-10 null result on `libero_10`, so a chunked executor isn't needed for
+this parity check specifically). `max_steps=520` is inferred from progress-
+bar output observed in earlier real `lerobot-eval` runs this session, not
+confirmed from source -- watch `rollout_length` in this run's own output
+against it.
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/run_policy_rollout.py \
+    --config {XGAP_DRIVE_ROOT}/configs/policy_rollout_libero_spatial_smoke.yaml
+```
+
+- **Close to 3/5 (60%)** -> `xgap`'s harness is validated for policy
+  rollout; proceed to the real Gate-1 measurement (3-5 tasks × 15-20
+  episodes).
+- **Meaningfully different** -> something in `xgap`'s env construction or
+  the batching bridge above is wrong -- debug before trusting any number
+  this harness produces, same discipline as every other step in this
+  project.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

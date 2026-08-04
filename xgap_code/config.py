@@ -172,3 +172,71 @@ class InitStateSweepConfig:
         if unknown:
             raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
         return cls(**raw)
+
+
+@dataclass
+class PolicyRolloutConfig:
+    """Config for scripts/run_policy_rollout.py: a real policy actually choosing
+    actions (xgap's own harness env + lerobot's own policy/preprocessing pipeline
+    -- see xgap_code/policy_rollout.py), NOT pre-recorded demo actions.
+
+    Single suite by design (unlike DemoReplayConfig's multi-suite dict) -- this
+    is the Gate-1/N=1 harness-parity check on libero_spatial specifically (see
+    README "libero_spatial로 변경한다"), not a general multi-suite sweep.
+
+    Init-state selection is STANDARD order (episode_seed directly, matching
+    lerobot-eval's own convention), not dataset_io's demo-matching remap --
+    see harness.make_real_libero_env's docstring.
+    """
+
+    experiment_name: str
+    local_output_root: str
+    task_suite: str
+    task_ids: list[int]
+    checkpoint_path: str
+
+    remote_output_root: str | None = None
+    episodes_per_task: int = 5
+
+    # LiberoEnv's own episode-length cap. Not read from the env at runtime (no verified
+    # API for that on xgap's own unbatched env, unlike lerobot's own VectorEnv, which
+    # exposes env.call("_max_episode_steps") -- see lerobot_eval.py's rollout()) --
+    # inferred instead from progress-bar output observed in earlier real lerobot-eval
+    # runs this session ("Running rollout with at most N steps" climbing to ~520).
+    # Print rollout_length per episode and compare against this if results look
+    # truncated early.
+    max_steps: int = 520
+
+    control_mode: str = "relative"
+    control_freq: int = 20  # see README "control_freq was wrong from the start"
+
+    # Project-wide invariants -- unused by a single-policy rollout (no candidate
+    # branching yet) but present now so later conditions (Oracle/World-model/Random)
+    # share this config shape. See README "Design constraints".
+    n_decision_points: int = 1
+    exec_horizon: int = 1
+    selection_unit: str = "chunk"
+
+    checkpoint_hash: str = "unknown"  # HF revision, if pinned; not resolved automatically
+    sync_every_n_episodes: int = 5
+    git_commit: str = "unknown"
+
+    resume: bool = True
+
+    def __post_init__(self):
+        if not self.task_ids:
+            raise ValueError("task_ids must be non-empty")
+        if self.control_mode not in ("relative", "absolute"):
+            raise ValueError(f"invalid control_mode '{self.control_mode}'")
+        if self.selection_unit not in ("chunk", "step", "random"):
+            raise ValueError(f"invalid selection_unit '{self.selection_unit}'")
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "PolicyRolloutConfig":
+        with open(path, encoding="utf-8") as f:
+            raw: dict[str, Any] = yaml.safe_load(f)
+        known = {k for k in cls.__dataclass_fields__}
+        unknown = set(raw) - known
+        if unknown:
+            raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
+        return cls(**raw)
