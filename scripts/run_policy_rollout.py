@@ -15,6 +15,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -37,6 +38,7 @@ def _git_commit() -> str:
 def run(cfg: PolicyRolloutConfig, config_file: str) -> dict:
     store = EpisodeStore(cfg.local_output_root, cfg.remote_output_root, cfg.sync_every_n_episodes)
     git_commit = _git_commit()
+    t_run_start = time.perf_counter()
 
     condition = "policy_rollout"
     results: list[dict] = []
@@ -67,7 +69,13 @@ def run(cfg: PolicyRolloutConfig, config_file: str) -> dict:
                 import pyarrow.parquet as pq
 
                 row = pq.read_table(store.persistent_dir() / f"{key}.parquet").to_pylist()[0]
-                results.append({"task_id": task_id, "episode_seed": episode_seed, "success": bool(row["episode_success"])})
+                results.append({
+                    "task_id": task_id,
+                    "episode_seed": episode_seed,
+                    "success": bool(row["episode_success"]),
+                    "rollout_length": row["rollout_length"],
+                    "execution_time": row["execution_time"],
+                })
                 print(f"  task={task_id} episode={episode_seed}: success={bool(row['episode_success'])} (resumed)")
                 continue
 
@@ -100,22 +108,38 @@ def run(cfg: PolicyRolloutConfig, config_file: str) -> dict:
             )
             env.close()
             store.write_episode(key, record)
-            results.append({"task_id": task_id, "episode_seed": episode_seed, "success": record.episode_success})
+            results.append({
+                "task_id": task_id,
+                "episode_seed": episode_seed,
+                "success": record.episode_success,
+                "rollout_length": record.rollout_length,
+                "execution_time": record.execution_time,
+            })
             print(
                 f"  task={task_id} episode={episode_seed}: success={record.episode_success} "
-                f"(rollout_length={record.rollout_length}, longest_close_run={record.longest_close_run_steps})"
+                f"(rollout_length={record.rollout_length}, longest_close_run={record.longest_close_run_steps}, "
+                f"execution_time={record.execution_time:.1f}s)"
             )
 
     store.sync_to_remote()
 
+    total_s = time.perf_counter() - t_run_start
     n = len(results)
     n_success = sum(1 for r in results if r["success"])
+    success_times = [r["execution_time"] for r in results if r["success"]]
+    fail_times = [r["execution_time"] for r in results if not r["success"]]
     summary = {
         "task_suite": cfg.task_suite,
         "task_ids": cfg.task_ids,
         "n_episodes": n,
         "n_success": n_success,
         "pc_success": (n_success / n * 100.0) if n else float("nan"),
+        # For extrapolating a bigger run's cost: failed episodes run to max_steps (~7x a
+        # typical success, observed this session) and dominate total time whenever the
+        # failure rate is high -- see README "cost-aware sizing".
+        "total_run_s": total_s,
+        "avg_success_episode_s": (sum(success_times) / len(success_times)) if success_times else None,
+        "avg_fail_episode_s": (sum(fail_times) / len(fail_times)) if fail_times else None,
         "results": results,
     }
     out_path = store.persistent_dir().parent / "rollout_summary.json"
@@ -131,6 +155,11 @@ def main() -> None:
     cfg = PolicyRolloutConfig.from_yaml(args.config)
     summary = run(cfg, config_file=args.config)
     print(f"\n[rollout] {summary['n_success']}/{summary['n_episodes']} = {summary['pc_success']:.1f}%")
+    print(f"[rollout] total_run_s={summary['total_run_s']:.1f}")
+    if summary["avg_success_episode_s"] is not None:
+        print(f"[rollout] avg_success_episode_s={summary['avg_success_episode_s']:.1f}")
+    if summary["avg_fail_episode_s"] is not None:
+        print(f"[rollout] avg_fail_episode_s={summary['avg_fail_episode_s']:.1f}")
 
 
 if __name__ == "__main__":

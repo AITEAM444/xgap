@@ -1767,6 +1767,105 @@ against it.
   this harness produces, same discipline as every other step in this
   project.
 
+Fixed one real bug caught by this run: `rollout_policy_episode` fed a
+batched-but-not-`preprocess_observation`-shaped dict straight to
+`env_preprocessor`, which errored `ObservationProcessorStep requires an
+observation in the transition.` -- `preprocess_observation()` (the lerobot
+function that shapes a raw env obs into the "transition" format its
+processor pipeline expects) was missing from the call sequence, even
+though `check_image_mirroring.py` already did this correctly.
+`preprocess_observation` is now an injected parameter
+(`preprocess_observation_fn`) rather than imported directly inside
+`rollout_policy_episode`, so the function stays testable against
+`MockLiberoEnv` with a plain identity-function stand-in -- a bare import
+broke the local tests, which is what caught the missing call.
+
+**Result: 2/5 (40%) via `xgap`'s own harness vs 3/5 (60%) via
+`lerobot-eval` -- one episode apart, at n=5.** Not identical, but n=5 is
+too small a sample to distinguish "harness bug" from ordinary noise (a
+single episode flip moves this rate by 20pp either way), on top of likely
+inherent run-to-run stochasticity in the checkpoint's own action sampling.
+Both successes finished quickly (77, 73 steps, `longest_close_run` 36-39,
+a plausible grasp shape); all three failures ran the full 520-step cap
+rather than ending early -- an ordinary failure shape, not an obviously
+broken one.
+
+## Cost-aware sizing: comparison and measurement are the same run
+
+Initially planned as two separate steps -- a harness-parity check at small
+n, then a separate larger Gate-1 measurement. Collapsed into one: the
+Gate-1 measurement (3-5 tasks × 15-20 episodes) already includes ~15-20
+episodes on task 0, which IS the harness-parity check, at a much larger
+(and therefore more trustworthy) n, for free. Running a separate bigger
+parity check first would only buy "the harness is probably right" without
+producing the Gate-1 number itself -- doing the same work twice.
+
+**Sizing the measurement itself needs real timing, not a guess**, because
+failed episodes are expensive: they run the full `max_steps` cap (520)
+where a success finishes in ~75 -- roughly 7x. At a 40-60% failure rate,
+most wall-clock time goes to episodes that don't succeed, so `total_run_s`
+scales with the failure rate, not just episode count. `run_policy_rollout.py`
+now reports `total_run_s` / `avg_success_episode_s` / `avg_fail_episode_s`
+in `rollout_summary.json` (added after the smoke run above already
+completed -- re-running that same config with `resume: true` costs nothing
+new, since every episode is already stored, and recomputes these numbers
+from each episode's already-saved `execution_time`). The actual 3-5-task ×
+15-20-episode config is sized from those real numbers once available, not
+guessed.
+
+## Test 2: state save/restore determinism
+
+Flagged in this project's own planning as the hardest implementation
+element, untouched until now: does "same state + same action = same
+result" actually hold? This underlies every future Oracle/World-model/
+Random candidate comparison (`n_decision_points`/`exec_horizon`/
+`selection_unit`, see "Design constraints" below) -- if restoring a saved
+simulator state and replaying the same action doesn't reproduce the same
+outcome, comparing candidates branched from a shared decision point is
+meaningless. Can run independently of, and at the same time as, the Gate-1
+measurement above.
+
+Added `harness.get_sim_state`/`harness.restore_sim_state`
+(`env.sim.get_state().flatten()` / `sim.set_state_from_flattened()` +
+`sim.forward()` -- the standard robosuite/MuJoCo idiom, and the exact
+method name this project already documented, but never implemented, as
+the fallback path for precise init-state control -- see `dataset_io.py`'s
+module docstring). **Unverified against source for this specific
+installed robosuite/MuJoCo version** -- flagged in both functions'
+docstrings as the first real test of this API in this project, same
+discipline as every other real-Colab-only piece of code here. Also flags
+a distinction worth checking empirically rather than assuming: this only
+restores MuJoCo's own physics state (qpos/qvel/time/act), not necessarily
+any of robosuite/LIBERO's Python-level episode bookkeeping on top of it
+(step counters, cumulative reward, success-flag state) -- whether that
+gap actually matters is exactly what this test is for.
+
+`scripts/test_state_restore_determinism.py` (+ pure comparison logic in
+`xgap_code/state_determinism.py`, tested locally without a simulator --
+`tests/test_state_determinism.py`): per trial, reset + `_N_WARMUP_STEPS`
+arbitrary actions (to get away from the trivially-matching exact reset
+state), save state, branch A steps one fixed non-trivial test action,
+restore the saved state, branch B steps the SAME action again, compare A
+vs B (5-dim eef+gripper state, and the rendered image -- reported as a
+diagnostic max-diff/percent-differing-pixels rather than a strict
+pass/fail, since rendering can have tiny nondeterminism even given
+identical physics).
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/test_state_restore_determinism.py \
+    --task-suite libero_spatial --task-id 0 --n-trials 5
+```
+
+- **State identical across all trials** -> the save/restore mechanism is
+  trustworthy for candidate branching; proceed to building Oracle/World-
+  model/Random condition logic on top of it.
+- **State differs** -> `n_action_steps`-shaped candidate comparisons would
+  be comparing noise, not real differences -- needs root-causing (missing
+  bookkeeping restore, a stochastic op somewhere in the physics/policy
+  path, or the `get_sim_state`/`restore_sim_state` API assumption itself
+  being wrong for this installed version) before any Oracle/World-model/
+  Random work starts.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

@@ -138,6 +138,51 @@ def read_actual_control_mode(env) -> str | None:
     return getattr(env, "reported_control_mode", None)
 
 
+def get_sim_state(env):
+    """Return the full underlying MuJoCo simulator state, flattened -- the
+    same format LIBERO's own `.hdf5` demo files store per-step (see
+    dataset_io.py's module docstring, "if demo replay ever needs precise...
+    init states again") and the same format `restore_sim_state` expects
+    back. This is a DIFFERENT, more precise thing than LIBERO's
+    `init_states` array (which only pins the very first frame of an
+    episode) -- it captures the exact physics state at any point.
+
+    Must be called after env.reset()/env.step(). Returns None if
+    unavailable (e.g. MockLiberoEnv, which has no real physics to save).
+
+    UNVERIFIED against source for the specific robosuite/MuJoCo version
+    installed via lerobot[libero] -- `sim.get_state().flatten()` /
+    `sim.set_state_from_flattened()` is the standard mujoco_py/robosuite
+    idiom (and the exact method name already used in this project's
+    documented-but-not-implemented fallback plan), but this is the first
+    real test of it in this project. See
+    scripts/test_state_restore_determinism.py.
+    """
+    inner = getattr(env, "_env", None)
+    if inner is None:
+        return None
+    sim = getattr(inner, "sim", None)
+    if sim is None:
+        return None
+    return sim.get_state().flatten()
+
+
+def restore_sim_state(env, state) -> None:
+    """Restore a state captured by get_sim_state(). Only restores MuJoCo's
+    own physics state (qpos/qvel/time/act) -- NOT necessarily any of
+    robosuite/LIBERO's own Python-level episode bookkeeping on top of it
+    (step counters, cumulative reward, success-flag state). Whether that
+    distinction actually matters in practice is exactly what
+    scripts/test_state_restore_determinism.py exists to check empirically,
+    not assume.
+    """
+    inner = getattr(env, "_env", None)
+    if inner is None or getattr(inner, "sim", None) is None:
+        raise ValueError("env has no underlying MuJoCo sim to restore state on (a real LiberoEnv is required)")
+    inner.sim.set_state_from_flattened(state)
+    inner.sim.forward()
+
+
 @dataclass
 class MockLiberoEnv:
     """Stands in for LiberoEnv in tests where mujoco/libero are not installed.
