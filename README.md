@@ -1497,6 +1497,64 @@ auto-generated timestamp directory used by every run above, so the
 recordings path is known ahead of time instead of needing to be read back
 out of the log.)
 
+**Not run** -- watching the plain videos from the earlier `n_action_steps=10`
+baseline run answered the question directly, no parquet/recording pipeline
+needed. (Those specific video files were lost to a runtime restart before
+they could be watched -- `lerobot-eval`'s `--output_dir` defaults to a path
+under `/content/`, ephemeral VM disk, with no Drive-sync of its own the way
+`xgap`'s own `EpisodeStore` has. Re-running the same baseline with
+`--output_dir` pointed at a Drive path fixes this for next time:
+`--output_dir=/content/drive/MyDrive/xgap/outputs/<name>`.)
+
+## Verdict: gripper oscillates, doesn't just miss or never try
+
+Watched the `libero_10` baseline videos (`n_action_steps=10`, default
+resolution, 0/5). The gripper is **not** stuck open the whole episode, and
+it's **not** one clean close-then-miss either -- it repeatedly closes and
+re-opens while approaching the object, as if repeatedly attempting and
+aborting the grasp. Qualitatively distinct from both halves of the
+"never attempts to close" vs. "closes but doesn't grasp" question this was
+meant to answer -- it's closer to indecisiveness than either a dead
+gripper or a single failed attempt. (The quantitative
+`longest_close_run` check, via `scripts/gripper_close_from_recording.py`
+above, would confirm this numerically -- no single continuous close run
+should reach the demo's 15-20+ step grasp threshold -- but wasn't run;
+the visual signal alone was decisive enough to stop here.)
+
+**Putting the whole SmolVLA-direct investigation together:**
+
+- Checkpoint/policy/env/`lerobot-eval` loop are all confirmed working
+  (`libero_spatial`: 60%, 3/5).
+- The failure is specific to `libero_10`, not SmolVLA in general.
+- `n_action_steps` (1 vs 10) makes no difference -- not an execution-
+  granularity bug.
+- Forcing render resolution to 256 gave a weak, inconclusive signal
+  (0/5 -> 1/5) -- not ruled out, but not the leading explanation either,
+  especially since `libero_spatial` already succeeded at the same default
+  360 resolution.
+- The gripper visibly *tries*, repeatedly, rather than never engaging or
+  failing once cleanly -- an oscillating, low-confidence grasp behavior
+  specifically on `libero_10`.
+
+**Most consistent explanation: this is a checkpoint weakness on
+`libero_10` specifically, not an environment or `xgap` harness bug.**
+`libero_10` (LIBERO-Long) tasks are two-stage ("put BOTH X and Y in the
+basket") and structurally harder than `libero_spatial`'s single-stage
+tasks; the oscillating grasp behavior is a plausible signature of a policy
+that is uncertain in exactly this harder regime, rather than of a
+plumbing bug -- every plumbing-shaped explanation tested (resolution,
+execution granularity, wrist camera, the environment/success-detection
+layer itself, the demo-replay init-state mechanism) came back negative or
+inconclusive-and-secondary. This also reproduces the project's original
+reported symptom ("arm approaches objects plausibly, never completes the
+grasp") exactly -- on completely independent infrastructure from the
+`xgap` harness that symptom was first observed through.
+
+Not confirmed, and out of scope for this diagnostic: *why* `libero_10`
+specifically is hard for this checkpoint (undertrained on long-horizon
+composition vs. something about `libero_10`'s scenes) -- that's a
+model-training/fine-tuning question, not an environment-diagnosis one.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
