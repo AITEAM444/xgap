@@ -1953,27 +1953,58 @@ suggests that trial's restore may have landed in a genuinely different
 contact configuration rather than just a transient solver-convergence
 artifact.
 
-**Fix applied (not yet verified against a real run): capture/restore
-`qacc_warmstart` separately.** `harness.get_sim_state`/`restore_sim_state`
-now also read/write `sim.data.qacc_warmstart` directly (a plain array
-attribute, independent of `MjSimState`) alongside the flattened state --
-`get_sim_state` now returns `{"flattened": ..., "qacc_warmstart": ...}`
-instead of a bare array. If this was the actual cause, re-running the
-same command above should push the ratio toward the "safe" end,
-especially in the early steps where it was previously stuck at ~1.0x.
+**`qacc_warmstart` fix applied and tested: REJECTED.** Confirmed captured
+(`shape=(43,)`, 39/43 nonzero -- a real, non-trivial warm-start buffer,
+via a diagnostic print added specifically to distinguish "fix didn't
+apply" from "fix applied but wasn't the cause") and restored on every
+trial, and the signal/noise arrays came back **bit-for-bit identical** to
+the pre-fix run. Physically this makes sense in hindsight: warm-starting
+an iterative solver should only affect convergence *speed*, not the
+converged *result*, if the solver reaches tolerance either way -- so it
+was never a strong candidate for changing the final state, only kept
+restored anyway since it's cheap and physically correct to do so.
+
+**Revised hypothesis: the robot CONTROLLER's own Python-level state, not
+physics at all.** `restore_sim_state` only ever touched `env._env.sim` --
+the OSC_POSE controller (`env._env.robots[0].controller`, the same object
+`read_actual_control_mode` reads) is a separate Python object with its
+own array/scalar memory (integral terms, previous-command memory,
+ramp/filter buffers) living entirely outside `sim`. A physics-only
+restore leaves that memory stale from whatever the controller was doing
+right before the restore -- which matches the observed pattern exactly:
+large noise immediately after restore, decaying over several steps as
+new commands overwrite the stale memory (seed 1, 2), or persisting if the
+stale memory keeps influencing a diverging trajectory (seed 0). This is
+also precisely the gap `restore_sim_state`'s docstring already flagged
+from the start ("NOT necessarily any of robosuite/LIBERO's own
+Python-level episode bookkeeping").
+
+**Fix applied, not yet verified against a real run.**
+`harness.get_sim_state`/`restore_sim_state` now also snapshot/restore the
+controller's array/scalar attributes
+(`_snapshot_controller_state`/`_restore_controller_state` -- shallow-copy
+only `np.ndarray`/`int`/`float`/`bool` fields off `vars(controller)`,
+skipping object references like back-pointers to the robot/sim/env, so
+this never risks deep-copying the whole simulator by accident).
+`get_sim_state` now returns `{"flattened": ..., "qacc_warmstart": ...,
+"controller": {...}}`. A second diagnostic print reports whether
+`robots[0].controller` was found and which keys got captured, so the next
+run again distinguishes "fix didn't apply" from "fix applied but wasn't
+the cause" rather than guessing from unchanged output.
 
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/test_state_restore_determinism.py \
     --task-suite libero_spatial --task-id 0 --n-trials 3 --n-compare-steps 10
 ```
 
-- **Ratio improves toward ≥100x, especially at early steps** ->
-  `qacc_warmstart` was the (or a major) cause; proceed with the fix in
-  place.
-- **No meaningful change** -> `qacc_warmstart` wasn't it (or wasn't the
-  whole story) -- next suspects: some other MuJoCo internal state
-  `MjSimState` doesn't capture, a genuinely stochastic op somewhere in
-  the physics/rendering path, or (for seed 0's non-decaying pattern
+- **Ratio improves toward ≥100x, especially at early steps** -> the
+  controller's own state was the (or a major) cause; proceed with the fix
+  in place.
+- **No meaningful change** -> neither `qacc_warmstart` nor controller
+  state was it -- next suspects: some other MuJoCo internal state neither
+  `MjSimState` nor `qacc_warmstart` captures (e.g. persistent contact/
+  constraint solver history), a genuinely stochastic op somewhere in the
+  physics/rendering path, or (for seed 0's non-decaying pattern
   specifically) an actual contact-configuration divergence that no state
   field alone would fix.
 

@@ -138,34 +138,67 @@ def read_actual_control_mode(env) -> str | None:
     return getattr(env, "reported_control_mode", None)
 
 
+def _snapshot_controller_state(controller) -> dict:
+    """Shallow-copy only array/scalar attributes off a robosuite controller's
+    `__dict__` -- e.g. integral terms, previous-command memory, ramp/filter
+    state -- skipping object references (back-pointers to the robot/sim/env)
+    so this never tries to deep-copy the whole simulator by accident. See
+    get_sim_state's docstring for why this exists."""
+    snapshot = {}
+    for key, value in vars(controller).items():
+        if isinstance(value, np.ndarray):
+            snapshot[key] = value.copy()
+        elif isinstance(value, (int, float, bool)):
+            snapshot[key] = value
+    return snapshot
+
+
+def _restore_controller_state(controller, snapshot: dict) -> None:
+    for key, value in snapshot.items():
+        current = getattr(controller, key, None)
+        if isinstance(current, np.ndarray) and isinstance(value, np.ndarray) and current.shape == value.shape:
+            current[:] = value
+        else:
+            setattr(controller, key, value)
+
+
 def get_sim_state(env):
     """Return the full underlying MuJoCo simulator state -- the position/
     velocity/time/actuator part in the same flattened format LIBERO's own
     `.hdf5` demo files store per-step (see dataset_io.py's module
     docstring, "if demo replay ever needs precise... init states again"),
     PLUS the contact solver's warm-start acceleration (`qacc_warmstart`)
-    captured separately. This is a DIFFERENT, more precise thing than
-    LIBERO's `init_states` array (which only pins the very first frame of
-    an episode) -- it captures the exact physics state at any point.
+    and the robot controller's own array/scalar state, captured separately.
+    This is a DIFFERENT, more precise thing than LIBERO's `init_states`
+    array (which only pins the very first frame of an episode) -- it
+    captures the exact physics + controller state at any point.
 
     Why `qacc_warmstart` is captured separately: mujoco_py's
     `sim.get_state()` (`MjSimState`: time, qpos, qvel, act) does NOT
-    include it, confirmed empirically by
-    scripts/test_state_restore_determinism.py's first real result --
-    restoring only the flattened state left small but real state
-    divergence (signal/noise ratio as low as 1.0x, i.e. restore-noise as
-    large as genuine action-driven differences) that decayed over several
-    steps in a pattern consistent with the contact solver re-converging
-    from a missing warm-start, not from missing qpos/qvel/time/act (which
-    ARE restored). `sim.data.qacc_warmstart` is a plain array attribute,
-    readable/writable directly, independent of `MjSimState`.
+    include it. TESTED AND REJECTED as the cause of the noise this module
+    was built to diagnose, though (scripts/test_state_restore_determinism.py:
+    restoring it produced bit-identical results to not restoring it) --
+    kept restored anyway since it's cheap and physically correct to do so,
+    just not the actual explanation.
+
+    Why the controller state is captured too: `restore_sim_state` only
+    ever touched `env._env.sim` -- the robot's OSC_POSE controller
+    (`env._env.robots[0].controller`, same object `read_actual_control_mode`
+    reads) is a separate Python object with its own internal array/scalar
+    state (integral terms, previous-command memory, ramp/filter buffers)
+    that lives entirely outside `sim`. A restore that only resets physics
+    leaves the controller's memory stale from whatever it was doing right
+    before the restore -- consistent with the observed noise pattern
+    (large initially, decaying over several steps as that stale memory
+    gets overwritten by new commands). This is the current leading
+    hypothesis, not yet confirmed -- see
+    scripts/test_state_restore_determinism.py's result log in the README.
 
     Must be called after env.reset()/env.step(). Returns None if
     unavailable (e.g. MockLiberoEnv, which has no real physics to save).
 
-    Returns {"flattened": <MjSimState.flatten() array>, "qacc_warmstart":
-    <copy of sim.data.qacc_warmstart, or None if that attribute doesn't
-    exist on this installed version>}.
+    Returns {"flattened": ..., "qacc_warmstart": ... or None, "controller":
+    {...} or None if no robots[0].controller found}.
     """
     inner = getattr(env, "_env", None)
     if inner is None:
@@ -174,22 +207,26 @@ def get_sim_state(env):
     if sim is None:
         return None
     qacc_warmstart = getattr(sim.data, "qacc_warmstart", None)
+    robots = getattr(inner, "robots", None)
+    controller_state = None
+    if robots:
+        controller_state = _snapshot_controller_state(robots[0].controller)
     return {
         "flattened": sim.get_state().flatten(),
         "qacc_warmstart": None if qacc_warmstart is None else np.array(qacc_warmstart, copy=True),
+        "controller": controller_state,
     }
 
 
 def restore_sim_state(env, state) -> None:
     """Restore a state captured by get_sim_state(). Restores MuJoCo's
-    physics state (qpos/qvel/time/act) AND `qacc_warmstart` (see
-    get_sim_state's docstring for why the latter is captured/restored
-    separately) -- NOT necessarily any of robosuite/LIBERO's own
-    Python-level episode bookkeeping on top of it (step counters,
-    cumulative reward, success-flag state). Whether that remaining gap
-    matters in practice is exactly what
-    scripts/test_state_restore_determinism.py exists to check
-    empirically, not assume.
+    physics state (qpos/qvel/time/act), `qacc_warmstart`, AND the robot
+    controller's own array/scalar state (see get_sim_state's docstring for
+    why each is handled) -- NOT necessarily any OTHER robosuite/LIBERO
+    Python-level episode bookkeeping (step counters, cumulative reward,
+    success-flag state). Whether that remaining gap matters in practice is
+    exactly what scripts/test_state_restore_determinism.py exists to
+    check empirically, not assume.
     """
     inner = getattr(env, "_env", None)
     if inner is None or getattr(inner, "sim", None) is None:
@@ -198,6 +235,10 @@ def restore_sim_state(env, state) -> None:
     sim.set_state_from_flattened(state["flattened"])
     if state.get("qacc_warmstart") is not None and hasattr(sim.data, "qacc_warmstart"):
         sim.data.qacc_warmstart[:] = state["qacc_warmstart"]
+    if state.get("controller") is not None:
+        robots = getattr(inner, "robots", None)
+        if robots:
+            _restore_controller_state(robots[0].controller, state["controller"])
     sim.forward()
 
 
