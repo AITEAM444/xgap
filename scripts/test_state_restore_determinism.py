@@ -11,7 +11,18 @@ implementation element, and untouched until now.
 Uses harness.get_sim_state/restore_sim_state (env.sim.get_state().flatten()
 / set_state_from_flattened(), the standard robosuite/MuJoCo idiom -- see
 that function's own docstring for the "unverified against this specific
-installed version" caveat; this script is the first real test of it).
+installed version" caveat).
+
+FIRST RESULT (n_compare_steps=1, single step post-restore): NOT bit-identical
+-- small but consistent state (~0.0015) and image (~0.2% pixels) differences
+across all 5 trials, reward identical in all 5. Most likely explanation:
+mujoco_py's MjSimState (time, qpos, qvel, act) does not include the contact
+solver's warm-start acceleration (qacc_warmstart) -- physics is deterministic
+given the TRUE internal solver state, but this flattened snapshot may not
+capture all of it. THIS SCRIPT now extends the comparison across
+`--n-compare-steps` (not just 1) to check whether that small gap compounds,
+stays flat, or shrinks over an exec_horizon-scale rollout, which is what
+actually matters for candidate comparison (not a single step).
 
 Procedure, per trial:
   1. Reset env (standard init_state order, trial index as seed), step
@@ -19,13 +30,14 @@ Procedure, per trial:
      state (a fresh reset might trivially "match" even with a real bug
      elsewhere).
   2. Save state.
-  3. Branch A: step ONE fixed test action, record resulting state/image.
+  3. Branch A: step a FIXED sequence of `--n-compare-steps` test actions,
+     recording state/image/reward after EVERY step.
   4. Restore the saved state.
-  5. Branch B: step the SAME fixed test action again, record resulting
-     state/image.
-  6. Compare A vs B -- state (5-dim eef+gripper) and rendered image.
+  5. Branch B: step the SAME fixed action sequence again, same recording.
+  6. Compare A vs B at every step index -- watch whether max_abs_diff grows,
+     stays flat, or shrinks across the sequence.
 
-    python scripts/test_state_restore_determinism.py --task-suite libero_spatial --task-id 0 --n-trials 5
+    python scripts/test_state_restore_determinism.py --task-suite libero_spatial --task-id 0 --n-trials 3 --n-compare-steps 10
 """
 
 from __future__ import annotations
@@ -42,9 +54,6 @@ from xgap_code.harness import get_sim_state, make_real_libero_env, restore_sim_s
 from xgap_code.state_determinism import compare_images, compare_state_chunks  # noqa: E402
 
 _N_WARMUP_STEPS = 10
-# Fixed, arbitrary but non-trivial action (moves + closes the gripper) -- deliberately
-# not all-zero, since a no-op action could trivially "match" without exercising physics.
-_TEST_ACTION = np.array([0.1, 0.0, -0.1, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
 
 def _extract_state(obs: dict) -> list[float]:
@@ -56,11 +65,21 @@ def _extract_state(obs: dict) -> list[float]:
     return np.concatenate([eef_pos, gripper_qpos]).tolist()
 
 
-def run_one_trial(env, seed: int) -> dict:
+def _run_branch(env, actions: np.ndarray) -> list[dict]:
+    steps = []
+    for action in actions:
+        obs, reward, terminated, truncated, _info = env.step(action)
+        steps.append({"state": _extract_state(obs), "image": env.render(), "reward": reward})
+        if terminated or truncated:
+            break
+    return steps
+
+
+def run_one_trial(env, seed: int, n_compare_steps: int) -> dict:
     obs, _info = env.reset(seed=seed)
-    rng = np.random.default_rng(seed)
+    warmup_rng = np.random.default_rng(seed)
     for _ in range(_N_WARMUP_STEPS):
-        warmup_action = rng.uniform(-0.2, 0.2, size=7).astype(np.float32)
+        warmup_action = warmup_rng.uniform(-0.2, 0.2, size=7).astype(np.float32)
         obs, _reward, terminated, truncated, _info = env.step(warmup_action)
         if terminated or truncated:
             return {"seed": seed, "skipped": "episode ended during warmup"}
@@ -69,29 +88,37 @@ def run_one_trial(env, seed: int) -> dict:
     if saved_state is None:
         raise RuntimeError("get_sim_state returned None -- a real LiberoEnv is required, not MockLiberoEnv")
 
-    obs_a, reward_a, _terminated_a, _truncated_a, _info_a = env.step(_TEST_ACTION)
-    state_a = _extract_state(obs_a)
-    image_a = env.render()
+    # Fixed, deterministic, non-trivial action sequence -- SAME sequence replayed on both
+    # branches. A different RNG stream from warmup (seed+1000) so it doesn't just repeat it.
+    compare_rng = np.random.default_rng(seed + 1000)
+    test_actions = compare_rng.uniform(-0.15, 0.15, size=(n_compare_steps, 7)).astype(np.float32)
+    test_actions[:, 6] = 1.0  # keep commanding "close" throughout -- non-trivial gripper dim too
+
+    branch_a = _run_branch(env, test_actions)
 
     restore_sim_state(env, saved_state)
 
-    obs_b, reward_b, _terminated_b, _truncated_b, _info_b = env.step(_TEST_ACTION)
-    state_b = _extract_state(obs_b)
-    image_b = env.render()
+    branch_b = _run_branch(env, test_actions[: len(branch_a)])
 
-    return {
-        "seed": seed,
-        "state_comparison": compare_state_chunks(state_a, state_b),
-        "image_comparison": compare_images(image_a, image_b),
-        "reward_identical": bool(np.isclose(reward_a, reward_b)),
-    }
+    per_step = [
+        {
+            "step": i,
+            "state_comparison": compare_state_chunks(a["state"], b["state"]),
+            "image_comparison": compare_images(a["image"], b["image"]),
+            "reward_identical": bool(np.isclose(a["reward"], b["reward"])),
+        }
+        for i, (a, b) in enumerate(zip(branch_a, branch_b, strict=True))
+    ]
+
+    return {"seed": seed, "n_steps_compared": len(per_step), "per_step": per_step}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--task-suite", default="libero_spatial")
     parser.add_argument("--task-id", type=int, default=0)
-    parser.add_argument("--n-trials", type=int, default=5)
+    parser.add_argument("--n-trials", type=int, default=3)
+    parser.add_argument("--n-compare-steps", type=int, default=10)
     parser.add_argument("--control-mode", default="relative")
     parser.add_argument("--control-freq", type=int, default=20)
     args = parser.parse_args()
@@ -105,19 +132,31 @@ def main() -> None:
             control_mode=args.control_mode,
             control_freq=args.control_freq,
         )
-        result = run_one_trial(env, seed=trial)
+        result = run_one_trial(env, seed=trial, n_compare_steps=args.n_compare_steps)
         env.close()
         results.append(result)
-        print(result)
 
-    valid = [r for r in results if "state_comparison" in r]
-    n_state_identical = sum(1 for r in valid if r["state_comparison"]["identical"])
-    n_image_identical = sum(1 for r in valid if r["image_comparison"]["identical"])
-    print(
-        f"\n[determinism] state identical: {n_state_identical}/{len(valid)}, "
-        f"image identical: {n_image_identical}/{len(valid)} "
-        f"({len(results) - len(valid)} trial(s) skipped: episode ended during warmup)"
-    )
+        if "per_step" not in result:
+            print(result)
+            continue
+        state_diffs = [s["state_comparison"]["max_abs_diff"] for s in result["per_step"]]
+        image_pct_diffs = [s["image_comparison"]["pct_pixels_differing"] for s in result["per_step"]]
+        rewards_matched = [s["reward_identical"] for s in result["per_step"]]
+        print(f"seed={trial} n_steps={result['n_steps_compared']}")
+        print(f"  state_max_abs_diff_per_step={[round(d, 6) for d in state_diffs]}")
+        print(f"  image_pct_differing_per_step={[round(d, 4) for d in image_pct_diffs]}")
+        print(f"  reward_identical_per_step={rewards_matched}")
+
+    valid = [r for r in results if "per_step" in r]
+    if valid:
+        first_step_diffs = [r["per_step"][0]["state_comparison"]["max_abs_diff"] for r in valid]
+        last_step_diffs = [r["per_step"][-1]["state_comparison"]["max_abs_diff"] for r in valid]
+        print(
+            f"\n[determinism] {len(valid)}/{len(results)} trials valid. "
+            f"avg state diff at step 0: {np.mean(first_step_diffs):.6f}, "
+            f"avg state diff at last step: {np.mean(last_step_diffs):.6f} "
+            f"(growth ratio: {np.mean(last_step_diffs) / max(np.mean(first_step_diffs), 1e-12):.2f}x)"
+        )
 
 
 if __name__ == "__main__":

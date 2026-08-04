@@ -1,0 +1,28 @@
+# Gate-1 measurement: 3 tasks x 20 episodes on libero_spatial. Sized from real
+# timing measured on the smoke run (configs/policy_rollout_libero_spatial_smoke.yaml):
+# avg_success_episode_s=89.1, avg_fail_episode_s=493.6 (~5.5x) -- see README
+# "Cost-aware sizing". This run's own task 0 subset (20 episodes) also serves as
+# the harness-parity check against lerobot-eval's 3/5 reference, at a much larger
+# n than the smoke run's n=5 -- see README "Cost-aware sizing: comparison and
+# measurement are the same run".
+
+experiment_name: policy_rollout_libero_spatial_gate1
+
+local_output_root: outputs/policy_rollout_libero_spatial_gate1/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1
+
+task_suite: libero_spatial
+task_ids: [0, 1, 2]
+episodes_per_task: 20
+
+checkpoint_path: HuggingFaceVLA/smolvla_libero
+checkpoint_hash: unknown
+
+max_steps: 520
+
+control_mode: relative
+control_freq: 20
+
+sync_every_n_episodes: 5
+
+resume: true

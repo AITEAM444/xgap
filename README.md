@@ -1813,6 +1813,24 @@ from each episode's already-saved `execution_time`). The actual 3-5-task ×
 15-20-episode config is sized from those real numbers once available, not
 guessed.
 
+**Real timing (from the resumed smoke run): `avg_success_episode_s=89.1`,
+`avg_fail_episode_s=493.6`** (~5.5x, confirming the failed-episodes-
+dominate-cost prediction). At this checkpoint's 40-60% failure rate on
+`libero_spatial`, expected cost is ~4.2-5.5 min/episode.
+
+**Decision: 3 tasks × 20 episodes = 60 episodes (~4.2-5.5 hours).**
+`configs/policy_rollout_libero_spatial_gate1.yaml` -- `task_ids: [0, 1, 2]`.
+Task 0's own 20-episode subset also serves as the harness-parity check
+against `lerobot-eval`'s 3/5 reference, at 4x the smoke run's n. Episode-
+level incremental save + resume (`EpisodeStore`, already built for exactly
+this Colab-survival case) means a mid-run disconnect loses at most the one
+in-flight episode -- re-running the same command continues, not restarts.
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/run_policy_rollout.py \
+    --config {XGAP_DRIVE_ROOT}/configs/policy_rollout_libero_spatial_gate1.yaml
+```
+
 ## Test 2: state save/restore determinism
 
 Flagged in this project's own planning as the hardest implementation
@@ -1865,6 +1883,39 @@ identical physics).
   path, or the `get_sim_state`/`restore_sim_state` API assumption itself
   being wrong for this installed version) before any Oracle/World-model/
   Random work starts.
+
+**Result: not bit-identical, but small and consistent.** All 5 trials:
+state `max_abs_diff` ~0.0014-0.0016 (tight clustering across trials, not
+random-magnitude noise), image ~0.18-0.22% of pixels differing, **reward
+identical in all 5**. Most likely explanation: mujoco_py's `MjSimState`
+(`time`, `qpos`, `qvel`, `act`) does not include the contact solver's
+warm-start acceleration (`qacc_warmstart`) -- physics is deterministic
+given the TRUE internal solver state, but this flattened snapshot may not
+capture all of it, so the very next physics step after a restore can
+converge slightly differently even from "the same" saved state.
+
+This single-step result doesn't answer the question that actually matters
+for candidate comparison: does this small per-step gap compound, stay
+flat, or shrink over an `exec_horizon`-scale rollout? Extended
+`test_state_restore_determinism.py` to compare EVERY step of a fixed
+`--n-compare-steps`-length action sequence on both branches (not just one
+step), reporting per-step `state_max_abs_diff`/`image_pct_differing`
+arrays plus a step-0-vs-last-step growth ratio, so a compounding gap
+(ratio ≫ 1x) is directly visible against a flat one (ratio ~1x).
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/test_state_restore_determinism.py \
+    --task-suite libero_spatial --task-id 0 --n-trials 3 --n-compare-steps 10
+```
+
+- **Flat (ratio ~1x)** -> the gap is a fixed per-restore artifact, not
+  compounding error -- likely tolerable for candidate comparison at
+  realistic `exec_horizon` lengths; note it and proceed.
+- **Growing (ratio ≫ 1x)** -> the small per-step gap compounds into
+  something that could flip which candidate "wins" over a real rollout --
+  needs fixing (most likely candidate: finding a way to also
+  save/restore `qacc_warmstart`, or whatever else `MjSimState` omits)
+  before Oracle/World-model/Random work can trust its own comparisons.
 
 ## Design constraints encoded in this codebase (do not violate)
 
