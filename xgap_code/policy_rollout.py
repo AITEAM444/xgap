@@ -52,18 +52,22 @@ def build_policy_and_processors(
     control_freq: int,
 ):
     """Build (policy, preprocessor, postprocessor, env_preprocessor,
-    env_postprocessor) via lerobot's real `@parser.wrap()` config-construction
-    path -- same mechanism scripts/check_image_mirroring.py already verified
-    working end to end in Colab (real cfg -> real make_policy download ->
-    real preprocessors), reused here instead of duplicated. Does NOT call
-    lerobot's own make_env -- the env comes from harness.make_real_libero_env
-    instead, per this module's whole point (see module docstring).
+    env_postprocessor, preprocess_observation) via lerobot's real
+    `@parser.wrap()` config-construction path -- same mechanism
+    scripts/check_image_mirroring.py already verified working end to end in
+    Colab (real cfg -> real make_policy download -> real preprocessors),
+    reused here instead of duplicated. Does NOT call lerobot's own make_env
+    -- the env comes from harness.make_real_libero_env instead, per this
+    module's whole point (see module docstring). `preprocess_observation` is
+    returned alongside the rest (rather than imported directly inside
+    rollout_policy_episode) so that function stays swappable in tests --
+    see tests/test_policy_rollout.py's identity-function stand-ins.
     """
     import sys
 
     from lerobot.configs import parser as lerobot_parser
     from lerobot.configs.eval import EvalPipelineConfig
-    from lerobot.envs import make_env_pre_post_processors
+    from lerobot.envs import make_env_pre_post_processors, preprocess_observation
     from lerobot.policies import make_policy, make_pre_post_processors
 
     @lerobot_parser.wrap()
@@ -101,7 +105,7 @@ def build_policy_and_processors(
     )
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
 
-    return policy, preprocessor, postprocessor, env_preprocessor, env_postprocessor
+    return policy, preprocessor, postprocessor, env_preprocessor, env_postprocessor, preprocess_observation
 
 
 def _batch_observation(obs: dict) -> dict:
@@ -123,6 +127,7 @@ def rollout_policy_episode(
     preprocessor: Any,
     postprocessor: Any,
     env_preprocessor: Any,
+    preprocess_observation_fn: Any,
     task_description: str,
     episode_seed: int,
     max_steps: int,
@@ -161,6 +166,7 @@ def rollout_policy_episode(
     while n_steps < max_steps:
         with timer.stage("inference"):
             batched_obs = _batch_observation(obs)
+            batched_obs = preprocess_observation_fn(batched_obs)
             batched_obs["task"] = [task_description]
             batched_obs = env_preprocessor(batched_obs)
             batched_obs = preprocessor(batched_obs)

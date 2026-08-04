@@ -46,7 +46,14 @@ def run(cfg: PolicyRolloutConfig, config_file: str) -> dict:
         task_description = get_libero_task_language(cfg.task_suite, task_id)
         print(f"[rollout] task='{task_description}' ({task_label})")
 
-        policy, preprocessor, postprocessor, env_preprocessor, _env_postprocessor = build_policy_and_processors(
+        (
+            policy,
+            preprocessor,
+            postprocessor,
+            env_preprocessor,
+            _env_postprocessor,
+            preprocess_observation_fn,
+        ) = build_policy_and_processors(
             checkpoint_path=cfg.checkpoint_path,
             task_suite_name=cfg.task_suite,
             task_id=task_id,
@@ -77,6 +84,7 @@ def run(cfg: PolicyRolloutConfig, config_file: str) -> dict:
                 preprocessor=preprocessor,
                 postprocessor=postprocessor,
                 env_preprocessor=env_preprocessor,
+                preprocess_observation_fn=preprocess_observation_fn,
                 task_description=task_description,
                 episode_seed=episode_seed,
                 max_steps=cfg.max_steps,
