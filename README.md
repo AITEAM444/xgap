@@ -1621,6 +1621,19 @@ Four PNGs land in `outputs/mirror_check/`: `dataset_reference_observation_images
 policy-input PNG against its matching dataset-reference PNG, side by side,
 for a left-right flip.
 
+**Result: not mirrored.** Both cameras' policy-input PNGs match their
+dataset-reference PNGs' left-right orientation directly -- basket position,
+gripper position, and the full left-to-right ordering of every grocery
+item (cans, the `MILK`-labeled box, the orange juice carton) line up
+between `dataset_reference_observation_images_image.png` /
+`policy_input_observation_images_image.png`, and likewise for `image2`
+(wrist). The mirrored text that prompted this whole check was specific to
+the *saved `.mp4`* rendering path (`env.render()`), not what the policy
+actually receives -- exactly the outcome the `pi05` 20/20 result predicted,
+now directly confirmed rather than assumed. **This closes the one thread
+that could have overturned the checkpoint-weakness verdict above -- it
+stands.**
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
