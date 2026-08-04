@@ -108,6 +108,11 @@ def run_one_trial(env, seed: int, n_compare_steps: int) -> dict:
     saved_state = get_sim_state(env)
     if saved_state is None:
         raise RuntimeError("get_sim_state returned None -- a real LiberoEnv is required, not MockLiberoEnv")
+    qacc = saved_state.get("qacc_warmstart")
+    if qacc is None:
+        print(f"  seed={seed}: qacc_warmstart NOT FOUND on sim.data -- fix is a no-op for this trial")
+    else:
+        print(f"  seed={seed}: qacc_warmstart captured, shape={qacc.shape}, nonzero={np.count_nonzero(qacc)}/{qacc.size}")
 
     # Two genuinely different fixed chunks -- different RNG streams, both distinct from warmup's.
     chunk_1 = _make_action_chunk(np.random.default_rng(seed + 1000), n_compare_steps)
