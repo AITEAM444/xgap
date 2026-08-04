@@ -1428,31 +1428,74 @@ changed:
 !tail -n 80 /content/lerobot_eval_smolvla_res256.log
 ```
 
+**Result: 1/5 (`pc_success=20.0`), episode 3 only.** Weak, inconclusive
+signal at this sample size -- 0/5 vs 1/5 is a single episode, well within
+noise. Not a clean "confirmed" or "rejected" the way `libero_spatial` was.
+Not pursued further with more episodes for now (diminishing value relative
+to cost); noted as a real but unresolved data point, not closed.
+
 **Alongside success rate, log gripper-close duration for every run above,
-not just pass/fail.** Three 0/5 results in a row say nothing on their own,
-but whether the longest continuous closed-gripper run (see
+not just pass/fail.** Three low-or-zero results in a row say little on
+their own, but whether the longest continuous closed-gripper run (see
 `xgap_code/gripper_metrics.longest_close_run`, and
 `DEMO_MIN_ACTUATION_LAG_STEPS=15` as the "a real demo grasp holds the
 gripper shut for 15-20+ consecutive steps" reference point measured
 earlier from real demo data) moves between conditions distinguishes "never
 attempts to close" from "closes but doesn't actually grasp" -- two
-completely different bugs. Not yet confirmed whether pure `lerobot-eval`
-already saves raw per-step actions anywhere (the eval output directory has
-at least `videos/`; unchecked whether there's also a rollout/actions file
-next to it, or whether the eval script itself exposes this only through
-its own dataset-saving path). Check before assuming a new script is
-needed:
+completely different bugs.
+
+Checked whether pure `lerobot-eval` already saves raw per-step actions:
+`eval_info.json` (2.5KB) turned out to be exactly the same aggregated
+summary already seen in stdout (`per_task`/`per_group`/`overall`, no raw
+actions) -- confirmed by reading it directly, not assumed from size alone.
+The module-path guess (`lerobot.scripts.eval`) was also wrong; the real
+one, found via `cat $(which lerobot-eval)`, is `lerobot.scripts.lerobot_eval`.
+
+**Reading that module's actual source paid off: no new script needed.**
+`eval_policy()` (and the `rollout()` it calls) already has a full
+recording path -- writes a real `LeRobotDataset` (raw `action` per frame,
+same on-disk shard layout as `HuggingFaceVLA/libero`) to
+`<output_dir>/recordings/<task_group>_<task_id>/` -- but `eval_main()`
+only wires it up when `cfg.eval.recording` is `True`; the CLI never sets
+it by default, which is why it never appeared. Confirmed the flag names
+directly from source (`cfg.eval.recording`, `cfg.eval.recording_repo_id`,
+`cfg.eval.recording_private` are literally referenced in `eval_main()`),
+not guessed. One caveat read from the same source: turning `recording` on
+sets `videos_dir = None` and `max_episodes_rendered = 0` -- the standalone
+`.mp4` files stop being written for that run (images are still captured,
+just packaged as the recorded dataset's own video feature instead of loose
+files).
+
+Added `scripts/gripper_close_from_recording.py` -- reads
+`<recording_dir>/data/chunk-*/file-*.parquet` (local files, same
+column-projection technique `dataset_io.py` already uses for real demo
+shards -- just pointed at a local path instead of `hf_hub_download`) and
+reports `longest_close_run` per episode via the existing, already-tested
+`gripper_metrics` function. No `recording_repo_id` passed, so nothing gets
+pushed to the Hub -- stays local only.
 
 ```
-!ls -la outputs/eval/*/*/
-!python -c "import lerobot.scripts.eval as e; print(e.__file__)"
+!lerobot-eval \
+    --policy.path=HuggingFaceVLA/smolvla_libero \
+    --policy.n_action_steps=10 \
+    --env.type=libero \
+    --env.task=libero_10 \
+    --env.task_ids=[0] \
+    --eval.batch_size=1 \
+    --eval.n_episodes=5 \
+    --eval.recording=true \
+    --env.max_parallel_tasks=1 \
+    --output_dir=/content/outputs/eval_gripper_libero10 \
+    > /content/lerobot_eval_smolvla_gripper_libero10.log 2>&1
+!tail -n 40 /content/lerobot_eval_smolvla_gripper_libero10.log
+!python {XGAP_DRIVE_ROOT}/scripts/gripper_close_from_recording.py \
+    --recording-dir /content/outputs/eval_gripper_libero10/recordings/libero_10_0
 ```
 
-If raw actions turn out not to be recoverable from a plain `lerobot-eval`
-run, the fallback is a small standalone script using lerobot's own
-`make_policy`/`LiberoEnv` directly (still not `xgap`'s harness) plus the
-existing `gripper_metrics.longest_close_run` function to log just this one
-number per episode.
+(`--output_dir` pinned explicitly here, rather than relying on the
+auto-generated timestamp directory used by every run above, so the
+recordings path is known ahead of time instead of needing to be read back
+out of the log.)
 
 ## Design constraints encoded in this codebase (do not violate)
 
