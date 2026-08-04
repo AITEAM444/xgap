@@ -2008,6 +2008,110 @@ the cause" rather than guessing from unchanged output.
   specifically) an actual contact-configuration divergence that no state
   field alone would fix.
 
+**Result: no meaningful change, confirmed with the controller state
+actually captured** (`goal_pos`, `goal_ori`, `joint_pos`, `joint_vel`,
+`mass_matrix`, etc. -- the full array/scalar attribute set on the OSC_POSE
+controller). Checked the interpolator hypothesis directly rather than
+guessing: `controller.interpolator_pos` / `interpolator_ori` are both
+`None` -- this controller isn't using interpolation at all, so there's no
+hidden interpolator state to have missed. Every Python-level state
+component identified so far (physics, `qacc_warmstart`, full controller
+memory) is now restored, and the residual is unchanged. The remaining
+candidate is MuJoCo/robosuite API-level -- `sim.forward()` may not fully
+reconstruct whatever internal state a normal `step()` sequence leaves
+behind (e.g. persistent contact/constraint-solver history) -- which would
+take real time to root-cause with no guaranteed fix.
+
+## Test 2: design change to prefix replay
+
+**Not recorded as an unresolved failure -- recorded as a design change,
+because it is one.** State save/restore was never the actual goal; it was
+one possible *means* to the actual goal, which is comparing multiple
+candidates fairly from the same decision point. There is a second way to
+reach that same goal that this project hadn't tried yet.
+
+**Four weeks out from the gate (2026-08-03, gate in early September),
+continuing to root-cause an API-level MuJoCo limitation is not worth it**
+-- it could take days and might still end in "no fix exists." State
+save/restore is not a requirement; fair candidate comparison is.
+
+**Alternative: prefix replay, not restore.**
+
+1. `env.reset(seed=<fixed>)`.
+2. Replay a recorded prefix action sequence up to the branch point.
+3. Run ONE candidate's action(s) from there.
+4. Repeat 1-3 for each candidate, from the same seed and the same
+   recorded prefix.
+
+No state is ever saved or restored -- each candidate is a fresh
+`reset()` + replay, not a branch off a saved snapshot. Same seed + same
+action sequence means MuJoCo is deterministic *by construction*: the
+state at the branch point is exactly what a normal `step()` sequence
+produces, because it IS one. Whatever hidden internal state
+`sim.forward()` couldn't reconstruct after a restore is simply never at
+issue -- there's no restore step for it to matter to.
+
+**Cost, accounted for, not ignored:** if the branch point is mid-episode,
+each candidate re-runs the shared prefix, so per-candidate cost is
+roughly the prefix length + the candidate's own length -- about 2x a
+single unbranched rollout at a mid-episode branch point, worse than
+save/restore's O(1) branching would have been. This multiplies directly
+into the Oracle-curve compute budget; a shorter per-episode timeout (e.g.
+300 steps instead of 520) partially offsets it. Accepted as a known,
+budgeted cost, not a hidden one.
+
+**Verification is symmetric with what save/restore was tested against:**
+the requirement was never "state save/restore is bit-identical" -- it was
+always "candidate comparison from a shared point is deterministic." Test
+2 is satisfied by confirming that requirement directly under the new
+construction: run the SAME `(seed, prefix action sequence, post-branch
+action sequence)` through `env.reset()` + `step()` TWICE, independently,
+and require the two runs to be **exactly bit-identical, not merely
+small** -- MuJoCo's own physics is deterministic, so a genuine match
+should be exact, and anything that only shrinks toward zero (e.g. down to
+1e-8) signals a different, still-unresolved source of nondeterminism
+worth coming back to, not a pass.
+
+`scripts/test_prefix_replay_determinism.py`: per trial, a fixed prefix
+action sequence + a fixed post-branch action sequence (distinct RNG
+streams, matching the earlier signal/noise script's chunk-generation
+pattern), run through `env.reset(seed) -> step()...` TWICE on the same
+env instance, comparing per-step state between the two runs.
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/test_prefix_replay_determinism.py \
+    --task-suite libero_spatial --task-id 0 --n-trials 3 --prefix-steps 10 --post-branch-steps 10
+```
+
+- **All exactly zero** -> Test 2's actual requirement (fair candidate
+  comparison from a shared decision point) is satisfied by this
+  construction. Prefix replay is the candidate-comparison mechanism going
+  forward -- proceed straight to building Oracle/World-model/Random
+  condition logic on top of it; no state-restore mechanism is needed.
+- **Any nonzero** -> unlike the state-restore result, this would NOT be
+  explained by MuJoCo/mujoco_py internals (there's no restore step in
+  this construction at all) -- it would mean something in this project's
+  own harness (env construction, action injection, the observation-
+  extraction path) introduces real nondeterminism, and needs fixing
+  before ANY candidate comparison, restore-based or not, could be
+  trusted.
+
+**Why this is worth having tested at all, not a wasted detour:** if the
+save/restore noise had gone unnoticed, every future Oracle-curve number
+would have been silently contaminated by restore noise indistinguishable
+from real signal -- seed 0's signal/noise ratio of 1.0x means candidate
+comparison would not have worked AT ALL for that case, without any error
+or warning to say so. Finding that now, at zero cost to the Gate-1
+measurement (which never used state-restore, and can run unaffected while
+this verification runs), is the diagnostic doing its job.
+
+**Ordering: does not block the Gate-1 measurement.** Gate-1
+(`configs/policy_rollout_libero_spatial_gate1.yaml`) never used
+save/restore -- it's a single, unbranched rollout per episode. Start it
+now; the prefix-replay verification above can run independently
+(sequentially, still one GPU) without invalidating anything already
+collected.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.
