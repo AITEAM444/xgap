@@ -1940,6 +1940,43 @@ number, is Test 2's actual pass/fail criterion.
   level -- must be fixed before any Oracle/World-model/Random work
   starts.
 
+**Result: FAIL. min ratio = 1.0x (avg ratio at last step 51.0x).** Seed 0's
+noise matched signal at every one of the 10 compared steps (ratio ~1.0
+throughout, never recovering). Seeds 1 and 2 also started at ratio ~1.0
+for the first several steps, then noise decayed roughly exponentially
+while signal stayed roughly constant, pulling the ratio up to 16-124x by
+the last step -- a pattern consistent with the contact solver
+re-converging over a few steps from a missing warm-start (matches
+`qacc_warmstart` not being part of `MjSimState`), not from missing
+qpos/qvel/time/act (which *are* restored). Seed 0's noise never decaying
+suggests that trial's restore may have landed in a genuinely different
+contact configuration rather than just a transient solver-convergence
+artifact.
+
+**Fix applied (not yet verified against a real run): capture/restore
+`qacc_warmstart` separately.** `harness.get_sim_state`/`restore_sim_state`
+now also read/write `sim.data.qacc_warmstart` directly (a plain array
+attribute, independent of `MjSimState`) alongside the flattened state --
+`get_sim_state` now returns `{"flattened": ..., "qacc_warmstart": ...}`
+instead of a bare array. If this was the actual cause, re-running the
+same command above should push the ratio toward the "safe" end,
+especially in the early steps where it was previously stuck at ~1.0x.
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/test_state_restore_determinism.py \
+    --task-suite libero_spatial --task-id 0 --n-trials 3 --n-compare-steps 10
+```
+
+- **Ratio improves toward ≥100x, especially at early steps** ->
+  `qacc_warmstart` was the (or a major) cause; proceed with the fix in
+  place.
+- **No meaningful change** -> `qacc_warmstart` wasn't it (or wasn't the
+  whole story) -- next suspects: some other MuJoCo internal state
+  `MjSimState` doesn't capture, a genuinely stochastic op somewhere in
+  the physics/rendering path, or (for seed 0's non-decaying pattern
+  specifically) an actual contact-configuration divergence that no state
+  field alone would fix.
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

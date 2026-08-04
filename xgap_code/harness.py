@@ -139,24 +139,33 @@ def read_actual_control_mode(env) -> str | None:
 
 
 def get_sim_state(env):
-    """Return the full underlying MuJoCo simulator state, flattened -- the
-    same format LIBERO's own `.hdf5` demo files store per-step (see
-    dataset_io.py's module docstring, "if demo replay ever needs precise...
-    init states again") and the same format `restore_sim_state` expects
-    back. This is a DIFFERENT, more precise thing than LIBERO's
-    `init_states` array (which only pins the very first frame of an
-    episode) -- it captures the exact physics state at any point.
+    """Return the full underlying MuJoCo simulator state -- the position/
+    velocity/time/actuator part in the same flattened format LIBERO's own
+    `.hdf5` demo files store per-step (see dataset_io.py's module
+    docstring, "if demo replay ever needs precise... init states again"),
+    PLUS the contact solver's warm-start acceleration (`qacc_warmstart`)
+    captured separately. This is a DIFFERENT, more precise thing than
+    LIBERO's `init_states` array (which only pins the very first frame of
+    an episode) -- it captures the exact physics state at any point.
+
+    Why `qacc_warmstart` is captured separately: mujoco_py's
+    `sim.get_state()` (`MjSimState`: time, qpos, qvel, act) does NOT
+    include it, confirmed empirically by
+    scripts/test_state_restore_determinism.py's first real result --
+    restoring only the flattened state left small but real state
+    divergence (signal/noise ratio as low as 1.0x, i.e. restore-noise as
+    large as genuine action-driven differences) that decayed over several
+    steps in a pattern consistent with the contact solver re-converging
+    from a missing warm-start, not from missing qpos/qvel/time/act (which
+    ARE restored). `sim.data.qacc_warmstart` is a plain array attribute,
+    readable/writable directly, independent of `MjSimState`.
 
     Must be called after env.reset()/env.step(). Returns None if
     unavailable (e.g. MockLiberoEnv, which has no real physics to save).
 
-    UNVERIFIED against source for the specific robosuite/MuJoCo version
-    installed via lerobot[libero] -- `sim.get_state().flatten()` /
-    `sim.set_state_from_flattened()` is the standard mujoco_py/robosuite
-    idiom (and the exact method name already used in this project's
-    documented-but-not-implemented fallback plan), but this is the first
-    real test of it in this project. See
-    scripts/test_state_restore_determinism.py.
+    Returns {"flattened": <MjSimState.flatten() array>, "qacc_warmstart":
+    <copy of sim.data.qacc_warmstart, or None if that attribute doesn't
+    exist on this installed version>}.
     """
     inner = getattr(env, "_env", None)
     if inner is None:
@@ -164,23 +173,32 @@ def get_sim_state(env):
     sim = getattr(inner, "sim", None)
     if sim is None:
         return None
-    return sim.get_state().flatten()
+    qacc_warmstart = getattr(sim.data, "qacc_warmstart", None)
+    return {
+        "flattened": sim.get_state().flatten(),
+        "qacc_warmstart": None if qacc_warmstart is None else np.array(qacc_warmstart, copy=True),
+    }
 
 
 def restore_sim_state(env, state) -> None:
-    """Restore a state captured by get_sim_state(). Only restores MuJoCo's
-    own physics state (qpos/qvel/time/act) -- NOT necessarily any of
-    robosuite/LIBERO's own Python-level episode bookkeeping on top of it
-    (step counters, cumulative reward, success-flag state). Whether that
-    distinction actually matters in practice is exactly what
-    scripts/test_state_restore_determinism.py exists to check empirically,
-    not assume.
+    """Restore a state captured by get_sim_state(). Restores MuJoCo's
+    physics state (qpos/qvel/time/act) AND `qacc_warmstart` (see
+    get_sim_state's docstring for why the latter is captured/restored
+    separately) -- NOT necessarily any of robosuite/LIBERO's own
+    Python-level episode bookkeeping on top of it (step counters,
+    cumulative reward, success-flag state). Whether that remaining gap
+    matters in practice is exactly what
+    scripts/test_state_restore_determinism.py exists to check
+    empirically, not assume.
     """
     inner = getattr(env, "_env", None)
     if inner is None or getattr(inner, "sim", None) is None:
         raise ValueError("env has no underlying MuJoCo sim to restore state on (a real LiberoEnv is required)")
-    inner.sim.set_state_from_flattened(state)
-    inner.sim.forward()
+    sim = inner.sim
+    sim.set_state_from_flattened(state["flattened"])
+    if state.get("qacc_warmstart") is not None and hasattr(sim.data, "qacc_warmstart"):
+        sim.data.qacc_warmstart[:] = state["qacc_warmstart"]
+    sim.forward()
 
 
 @dataclass
