@@ -39,8 +39,6 @@ not "looks upright to a human".
     python scripts/check_image_mirroring.py --out-dir /content/outputs/mirror_check
 """
 
-from __future__ import annotations
-
 import argparse
 import io
 import sys
