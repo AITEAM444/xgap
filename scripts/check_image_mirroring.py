@@ -16,9 +16,20 @@ lerobot's own `rollout()` does (see lerobot/scripts/lerobot_eval.py source --
 same public functions, same order: make_env, make_policy,
 make_pre_post_processors, make_env_pre_post_processors,
 preprocess_observation, env_preprocessor, preprocessor), for one env.reset()
-with no stepping, and dumps the resulting per-camera tensors as PNG. No
-lerobot/libero monkey-patching -- these are all public functions, called
-directly, not wrapped or patched.
+with no stepping, and dumps the resulting per-camera tensors as PNG.
+
+Config construction reuses lerobot's own `@parser.wrap()` decorator (see
+`lerobot/configs/parser.py`), not a raw `draccus.parse(...)` call -- a plain
+draccus call doesn't know how to resolve `--policy.path=...` into a concrete
+policy config (that CLI-only field is stripped and resolved via a separate
+`sys.argv`-reading code path inside `wrap()` itself, confirmed by reading
+its source; a naive re-implementation missed this and errored with
+"unrecognized arguments: --policy.path=..."). Reusing the real decorator on
+a stand-in function that just returns `cfg` guarantees identical parsing to
+every `!lerobot-eval ...` command run so far, at the cost of temporarily
+overwriting `sys.argv` (restored immediately after). Still no lerobot/libero
+monkey-patching -- `wrap()` is a public, intended-for-reuse decorator, not
+something being patched.
 
 The reference frame comes from xgap_code.dataset_io.fetch_reference_frame_images
 (same libero_10 task, same demo episode used throughout this project,
@@ -37,10 +48,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import draccus  # noqa: E402
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
 
+from lerobot.configs import parser as lerobot_parser  # noqa: E402
 from lerobot.configs.eval import EvalPipelineConfig  # noqa: E402
 from lerobot.envs import make_env, make_env_pre_post_processors, preprocess_observation  # noqa: E402
 from lerobot.policies import make_policy, make_pre_post_processors  # noqa: E402
@@ -54,6 +65,35 @@ _REFERENCE_TASK_SUITE = "libero_10"
 _REFERENCE_TASK_ID = 0
 _REFERENCE_EPISODE_INDEX = 8
 _REFERENCE_REPO_ID = "HuggingFaceVLA/libero"
+
+
+def _build_eval_cfg(out_dir: Path) -> EvalPipelineConfig:
+    """Build EvalPipelineConfig via the real `@parser.wrap()` machinery (see
+    module docstring for why a raw draccus.parse(...) call is not equivalent),
+    by temporarily pointing sys.argv at the same args every real
+    `!lerobot-eval ...` command in this project has used, then restoring it."""
+
+    @lerobot_parser.wrap()
+    def _capture(cfg: EvalPipelineConfig) -> EvalPipelineConfig:
+        return cfg
+
+    saved_argv = sys.argv
+    sys.argv = [
+        "lerobot-eval",
+        "--policy.path=HuggingFaceVLA/smolvla_libero",
+        "--policy.n_action_steps=10",
+        "--env.type=libero",
+        f"--env.task={_REFERENCE_TASK_SUITE}",
+        f"--env.task_ids=[{_REFERENCE_TASK_ID}]",
+        "--eval.batch_size=1",
+        "--eval.n_episodes=1",
+        "--env.max_parallel_tasks=1",
+        f"--output_dir={out_dir}",
+    ]
+    try:
+        return _capture()
+    finally:
+        sys.argv = saved_argv
 
 
 def _save_tensor_as_png(tensor, path: Path) -> None:
@@ -72,20 +112,7 @@ def _save_tensor_as_png(tensor, path: Path) -> None:
 
 
 def dump_policy_input_images(out_dir: Path) -> list[str]:
-    cfg = draccus.parse(
-        EvalPipelineConfig,
-        args=[
-            "--policy.path=HuggingFaceVLA/smolvla_libero",
-            "--policy.n_action_steps=10",
-            "--env.type=libero",
-            f"--env.task={_REFERENCE_TASK_SUITE}",
-            f"--env.task_ids=[{_REFERENCE_TASK_ID}]",
-            "--eval.batch_size=1",
-            "--eval.n_episodes=1",
-            "--env.max_parallel_tasks=1",
-            f"--output_dir={out_dir}",
-        ],
-    )
+    cfg = _build_eval_cfg(out_dir)
 
     envs = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs, trust_remote_code=cfg.trust_remote_code)
     env = next(iter(next(iter(envs.values())).values()))
@@ -142,9 +169,9 @@ def dump_reference_images(out_dir: Path) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--out-dir", required=True)
-    args = parser.parse_args()
+    arg_parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    arg_parser.add_argument("--out-dir", required=True)
+    args = arg_parser.parse_args()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
