@@ -2075,35 +2075,60 @@ worth coming back to, not a pass.
 `scripts/test_prefix_replay_determinism.py`: per trial, a fixed prefix
 action sequence + a fixed post-branch action sequence (distinct RNG
 streams, matching the earlier signal/noise script's chunk-generation
-pattern), run through `env.reset(seed) -> step()...` TWICE on the same
-env instance, comparing per-step state between the two runs.
+pattern), run through `env.reset(seed) -> step()...` TWICE, comparing
+per-step state between the two runs.
 
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/test_prefix_replay_determinism.py \
     --task-suite libero_spatial --task-id 0 --n-trials 3 --prefix-steps 10 --post-branch-steps 10
 ```
 
-- **All exactly zero** -> Test 2's actual requirement (fair candidate
-  comparison from a shared decision point) is satisfied by this
-  construction. Prefix replay is the candidate-comparison mechanism going
-  forward -- proceed straight to building Oracle/World-model/Random
-  condition logic on top of it; no state-restore mechanism is needed.
-- **Any nonzero** -> unlike the state-restore result, this would NOT be
-  explained by MuJoCo/mujoco_py internals (there's no restore step in
-  this construction at all) -- it would mean something in this project's
-  own harness (env construction, action injection, the observation-
-  extraction path) introduces real nondeterminism, and needs fixing
-  before ANY candidate comparison, restore-based or not, could be
-  trusted.
+**First result (reusing one env instance across both `reset()` calls):
+FAIL, and a genuinely new finding, not a repeat of the save/restore
+noise.** `reset_diff` (state right after `reset()`, before any action)
+was already nonzero -- 0.011-0.021, LARGER than the save/restore
+residual -- and stayed roughly CONSTANT across the full 21-step
+trajectory (not growing/decaying). That shape rules out accumulating
+per-step noise and points at a fixed initial-condition mismatch instead:
+the two `reset()` calls landed on two different (but each internally
+consistent) starting scenes.
 
-**Why this is worth having tested at all, not a wasted detour:** if the
-save/restore noise had gone unnoticed, every future Oracle-curve number
-would have been silently contaminated by restore noise indistinguishable
-from real signal -- seed 0's signal/noise ratio of 1.0x means candidate
-comparison would not have worked AT ALL for that case, without any error
-or warning to say so. Finding that now, at zero cost to the Gate-1
-measurement (which never used state-restore, and can run unaffected while
-this verification runs), is the diagnostic doing its job.
+Tested two hypotheses in sequence, one at a time:
+1. `np.random.seed(seed)` right before `env.reset(seed)`, in case
+   robosuite's object-placement sampler reads numpy's global RNG rather
+   than an env-injected seeded one. **Rejected** -- bit-identical to the
+   unfixed run.
+2. Constructing a FRESH env instance for each of the two `reset()` calls,
+   instead of reusing one instance across both. **Confirmed.** `LiberoEnv`
+   most likely tracks some per-instance state (plausibly an internal
+   reset counter influencing init_state selection) that advances on every
+   `reset()` call regardless of the seed argument -- a fresh instance
+   doesn't carry that between the two comparison runs.
+
+**Result with a fresh env per run: PASS, exactly 0.0 at every step, all 3
+trials, all 21 steps each.** `reset_diff=0.0` and every subsequent
+`diff_per_step` value is `0.0` -- true bit-identical determinism, not
+"small." Prefix replay satisfies Test 2's actual requirement (fair
+candidate comparison from a shared decision point) cleanly.
+
+**New implementation rule, binding on future Oracle/World-model/Random
+code (added to "Design constraints" below): construct a FRESH env per
+candidate, never reuse one env instance across multiple `reset()` calls
+for different candidates.** Violating this would silently reintroduce the
+exact nondeterminism this test just eliminated, with no error to signal
+it -- the same failure mode as the original save/restore noise, just from
+a different source.
+
+**Why this was worth testing at all, not a wasted detour:** if the
+`reset()`-reuse nondeterminism had gone unnoticed, every future
+Oracle-curve number would have been silently contaminated by which env
+instance happened to serve which candidate -- a strictly worse failure
+mode than the save/restore noise, since it wasn't even flagged by the
+first (pre-fix) run of this very test until the `reset_diff` field was
+added to localize it. Finding and closing this out now, at zero cost to
+the Gate-1 measurement (which never used save/restore or multi-reset env
+reuse, and ran unaffected the whole time), is the diagnostic doing its
+job twice over.
 
 **Ordering: does not block the Gate-1 measurement.** Gate-1
 (`configs/policy_rollout_libero_spatial_gate1.yaml`) never used
@@ -2118,3 +2143,4 @@ collected.
 - `exec_horizon` (how many env steps run per policy call) and `selection_unit` (granularity at which candidates are compared) are separate config fields even before `selection_unit` has more than one implemented value. Step-level selection would break chunk-internal structure and produce a fake performance drop — this is a documented invariant, not a hypothetical.
 - No monkey-patching `lerobot` or `libero`. If ever unavoidable, isolate in its own module with a comment explaining why.
 - All experiment parameters live in `configs/*.yaml`. No hardcoded constants in `xgap_code/` or `scripts/`.
+- Candidate comparison (Oracle/World-model/Random) uses prefix replay, not state save/restore -- see "Test 2: design change to prefix replay". A FRESH env instance must be constructed per candidate; reusing one env instance across multiple `reset()` calls for different candidates reintroduces real nondeterminism (confirmed empirically: `reset_diff` up to 0.021, vs exactly `0.0` with a fresh instance per run).
