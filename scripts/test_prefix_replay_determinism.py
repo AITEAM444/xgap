@@ -71,8 +71,11 @@ def run_one_trial(env, seed: int, prefix_steps: int, post_branch_steps: int) -> 
     full_sequence = np.concatenate([prefix_actions, post_actions], axis=0)
 
     def run_once() -> list[list[float]]:
-        env.reset(seed=seed)
-        states = []
+        obs, _info = env.reset(seed=seed)
+        # index 0 = the RESET observation itself, before any action -- isolates
+        # "does reset(seed=X) alone already differ" from "the divergence only
+        # starts once actions are applied".
+        states = [_extract_state(obs)]
         for action in full_sequence:
             obs, _reward, terminated, truncated, _info = env.step(action)
             states.append(_extract_state(obs))
@@ -85,7 +88,7 @@ def run_one_trial(env, seed: int, prefix_steps: int, post_branch_steps: int) -> 
 
     n = min(len(run_1), len(run_2))
     diffs = [compare_state_chunks(run_1[i], run_2[i])["max_abs_diff"] for i in range(n)]
-    return {"seed": seed, "n_steps": n, "diffs": diffs}
+    return {"seed": seed, "n_steps": n, "diffs": diffs, "reset_diff": diffs[0] if diffs else None}
 
 
 def main() -> None:
@@ -114,8 +117,10 @@ def main() -> None:
 
         diffs = [round(d, 10) for d in result["diffs"]]
         all_exact_zero = all(d == 0.0 for d in result["diffs"])
+        reset_exact_zero = result["reset_diff"] == 0.0
         print(f"seed={trial} n_steps={result['n_steps']} all_exact_zero={all_exact_zero}")
-        print(f"  diff_per_step={diffs}")
+        print(f"  reset_diff (index 0, before any action)={round(result['reset_diff'], 10)} exact_zero={reset_exact_zero}")
+        print(f"  diff_per_step (index 0 = reset, 1..N = post-action)={diffs}")
 
     all_zero = all(all(d == 0.0 for d in r["diffs"]) for r in results)
     max_diff = max((d for r in results for d in r["diffs"]), default=0.0)
