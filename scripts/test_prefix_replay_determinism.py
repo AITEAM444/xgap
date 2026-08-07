@@ -71,6 +71,15 @@ def run_one_trial(env, seed: int, prefix_steps: int, post_branch_steps: int) -> 
     full_sequence = np.concatenate([prefix_actions, post_actions], axis=0)
 
     def run_once() -> list[list[float]]:
+        # HYPOTHESIS TEST (see README): env.reset(seed=X) alone already produced
+        # different starting scenes across two calls with the identical seed --
+        # measured BEFORE this fix, via the reset_diff field. Suspect: robosuite's
+        # object-placement sampler may draw from the numpy GLOBAL RNG (np.random)
+        # rather than an env-injected seeded one, so the passed `seed` never
+        # reaches it. Seeding the global RNG explicitly, right before reset(),
+        # tests that directly -- not monkey-patching robosuite/lerobot, just
+        # setting standard global RNG state some library code may consume.
+        np.random.seed(seed)
         obs, _info = env.reset(seed=seed)
         # index 0 = the RESET observation itself, before any action -- isolates
         # "does reset(seed=X) alone already differ" from "the divergence only
