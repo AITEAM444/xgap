@@ -61,7 +61,10 @@ def _extract_state(obs: dict) -> list[float]:
     return np.concatenate([eef_pos, gripper_qpos]).tolist()
 
 
-def run_one_trial(env, seed: int, prefix_steps: int, post_branch_steps: int) -> dict:
+def run_one_trial(
+    *, task_suite: str, task_id: int, control_mode: str, control_freq: int,
+    seed: int, prefix_steps: int, post_branch_steps: int,
+) -> dict:
     prefix_rng = np.random.default_rng(seed)
     prefix_actions = prefix_rng.uniform(-0.2, 0.2, size=(prefix_steps, 7)).astype(np.float32)
     # Different RNG stream from the prefix's -- the "candidate" action(s) after the branch point.
@@ -71,26 +74,37 @@ def run_one_trial(env, seed: int, prefix_steps: int, post_branch_steps: int) -> 
     full_sequence = np.concatenate([prefix_actions, post_actions], axis=0)
 
     def run_once() -> list[list[float]]:
-        # HYPOTHESIS TEST (see README): env.reset(seed=X) alone already produced
-        # different starting scenes across two calls with the identical seed --
-        # measured BEFORE this fix, via the reset_diff field. Suspect: robosuite's
-        # object-placement sampler may draw from the numpy GLOBAL RNG (np.random)
-        # rather than an env-injected seeded one, so the passed `seed` never
-        # reaches it. Seeding the global RNG explicitly, right before reset(),
-        # tests that directly -- not monkey-patching robosuite/lerobot, just
-        # setting standard global RNG state some library code may consume.
-        np.random.seed(seed)
-        obs, _info = env.reset(seed=seed)
-        # index 0 = the RESET observation itself, before any action -- isolates
-        # "does reset(seed=X) alone already differ" from "the divergence only
-        # starts once actions are applied".
-        states = [_extract_state(obs)]
-        for action in full_sequence:
-            obs, _reward, terminated, truncated, _info = env.step(action)
-            states.append(_extract_state(obs))
-            if terminated or truncated:
-                break
-        return states
+        # HYPOTHESIS TEST (see README): reusing ONE env instance across two
+        # reset(seed=X) calls (the previous version of this script) gave
+        # different starting scenes despite the identical seed, and neither
+        # passing seed nor seeding the numpy global RNG changed that. New
+        # suspect: LiberoEnv may track an internal per-INSTANCE reset counter
+        # that advances init_state selection on every reset() call regardless
+        # of the seed argument (a common pattern for cycling through episodes
+        # in continuous training loops) -- which a freshly CONSTRUCTED env
+        # would not carry between the two runs. Testing directly: build a
+        # brand-new env for every run_once() call instead of reusing one.
+        env = make_real_libero_env(
+            task_suite_name=task_suite,
+            task_id=task_id,
+            demo_episode_index_within_task=seed,
+            control_mode=control_mode,
+            control_freq=control_freq,
+        )
+        try:
+            obs, _info = env.reset(seed=seed)
+            # index 0 = the RESET observation itself, before any action -- isolates
+            # "does reset(seed=X) alone already differ" from "the divergence only
+            # starts once actions are applied".
+            states = [_extract_state(obs)]
+            for action in full_sequence:
+                obs, _reward, terminated, truncated, _info = env.step(action)
+                states.append(_extract_state(obs))
+                if terminated or truncated:
+                    break
+            return states
+        finally:
+            env.close()
 
     run_1 = run_once()
     run_2 = run_once()
@@ -113,15 +127,15 @@ def main() -> None:
 
     results = []
     for trial in range(args.n_trials):
-        env = make_real_libero_env(
-            task_suite_name=args.task_suite,
+        result = run_one_trial(
+            task_suite=args.task_suite,
             task_id=args.task_id,
-            demo_episode_index_within_task=trial,
             control_mode=args.control_mode,
             control_freq=args.control_freq,
+            seed=trial,
+            prefix_steps=args.prefix_steps,
+            post_branch_steps=args.post_branch_steps,
         )
-        result = run_one_trial(env, seed=trial, prefix_steps=args.prefix_steps, post_branch_steps=args.post_branch_steps)
-        env.close()
         results.append(result)
 
         diffs = [round(d, 10) for d in result["diffs"]]
