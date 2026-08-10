@@ -1,0 +1,33 @@
+# Gate-1 measurement, distributed: one teammate per task_id, same experiment
+# (policy_rollout_libero_spatial_gate1) as configs/policy_rollout_libero_spatial_gate1.yaml
+# (which already covers task_ids 0,1,2). Same remote_output_root on purpose --
+# if everyone shares Drive access to the same folder, results merge
+# automatically (EpisodeStore's episode key includes task_id, so no filename
+# collisions across tasks). If each person is on their own separate Google
+# account/Drive instead, this just lands under their own Drive and the
+# per-episode parquet files get copied together into one place afterward --
+# either way works, only the merge step differs.
+#
+# To make a copy for another task: change `task_ids` and `experiment_name`
+# (keep remote_output_root the same) -- nothing else needs to differ.
+
+experiment_name: policy_rollout_libero_spatial_gate1_task4
+
+local_output_root: outputs/policy_rollout_libero_spatial_gate1/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1
+
+task_suite: libero_spatial
+task_ids: [4]
+episodes_per_task: 20
+
+checkpoint_path: HuggingFaceVLA/smolvla_libero
+checkpoint_hash: unknown
+
+max_steps: 520
+
+control_mode: relative
+control_freq: 20
+
+sync_every_n_episodes: 5
+
+resume: true
