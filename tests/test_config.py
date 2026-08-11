@@ -241,10 +241,10 @@ def _write_gate2_outcome_yaml(tmp_path, overrides=None):
         "checkpoint_path": "HuggingFaceVLA/smolvla_libero",
         "source_output_root": str(tmp_path / "source"),
         "source_condition": "policy_rollout",
-        "source_episode_seed": 0,
+        "source_episode_seeds": {0: [1, 2, 3, 4], 2: [1, 2, 3, 4]},
         "branch_fraction": 0.5,
         "exec_horizon": 10,
-        "max_outcome_trials": 5,
+        "n_candidates": 64,
         "max_steps": 200,
         "control_mode": "relative",
         "control_freq": 20,
@@ -262,8 +262,9 @@ def test_gate2_outcome_config_loads(tmp_path):
     cfg = GateTwoOutcomeConfig.from_yaml(path)
     assert cfg.task_ids == [0, 2]
     assert cfg.branch_fraction == 0.5
-    assert cfg.max_outcome_trials == 5
+    assert cfg.n_candidates == 64
     assert cfg.max_steps == 200
+    assert cfg.source_episode_seeds == {0: [1, 2, 3, 4], 2: [1, 2, 3, 4]}
 
 
 def test_gate2_outcome_config_rejects_unknown_field(tmp_path):
@@ -284,13 +285,31 @@ def test_gate2_outcome_config_rejects_bad_branch_fraction(tmp_path):
         GateTwoOutcomeConfig.from_yaml(path)
 
 
-def test_gate2_outcome_config_rejects_zero_max_outcome_trials(tmp_path):
-    path = _write_gate2_outcome_yaml(tmp_path, {"max_outcome_trials": 0})
-    with pytest.raises(ValueError, match="max_outcome_trials"):
+def test_gate2_outcome_config_rejects_zero_n_candidates(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"n_candidates": 0})
+    with pytest.raises(ValueError, match="n_candidates"):
         GateTwoOutcomeConfig.from_yaml(path)
 
 
 def test_gate2_outcome_config_rejects_bad_control_mode(tmp_path):
     path = _write_gate2_outcome_yaml(tmp_path, {"control_mode": "sideways"})
     with pytest.raises(ValueError, match="invalid control_mode"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_empty_source_episode_seeds(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"source_episode_seeds": {}})
+    with pytest.raises(ValueError, match="source_episode_seeds must be set"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_missing_task_in_source_episode_seeds(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"source_episode_seeds": {0: [1, 2]}})
+    with pytest.raises(ValueError, match="source_episode_seeds missing entries"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_empty_seed_list_for_a_task(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"source_episode_seeds": {0: [1, 2], 2: []}})
+    with pytest.raises(ValueError, match="empty seed lists"):
         GateTwoOutcomeConfig.from_yaml(path)

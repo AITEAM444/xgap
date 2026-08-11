@@ -2282,39 +2282,75 @@ diagnostic evidence above, not used as a Gate 2 input going forward.
 diversity metric.** `scripts/run_gate2_outcome.py` (config:
 `xgap_code.config.GateTwoOutcomeConfig`, `configs/gate2_outcome.yaml`)
 implements this directly, per task at `branch_fraction=0.5` -- FIXED by
-this decision, not derived from the (now-diagnostic-only) sweep:
+this decision, not derived from the (now-diagnostic-only) sweep.
 
-1. Prefix-replay to the branch point (same construction as the diversity
-   script, fresh env, deterministic by Test 2's design).
-2. Sample ONE candidate action chunk (`predict_action_chunk(noise=None)`).
-3. Commit that candidate's first `exec_horizon` steps.
-4. Hand off to the **base policy**, closed-loop, for the rest of the
-   episode -- `policy_rollout.step_with_policy_until_done`, extracted from
-   `rollout_policy_episode`'s own inline loop specifically so it could be
-   reused starting mid-episode here instead of only from a fresh reset.
-   This is literally "Oracle" in miniature: one candidate branch, finished
-   by the policy that would run anyway.
-5. Record `episode_success`. Repeat with a FRESH candidate (fresh env each
-   time, Test 2's binding design rule) up to `max_outcome_trials` (default
-   5), **stopping early as soon as both a success and a failure have been
-   observed** -- a mix already answers the question, no need to burn the
-   full budget confirming it further.
+## Gate 2, corrected: outcome must branch from failures too, not only successes
 
-**Verdict rule, stated in advance so it can't be rationalized after the
-fact:**
-- All trials at a branch point come back the SAME (all success or all
-  failure) -> **Gate 2 fails** there -- candidates that differ in action
-  space converge to the same outcome anyway, so there is nothing for an
-  Oracle/World-model/Random comparison to select between.
-- A mix of success and failure -> **Gate 2 passes** -- and this result
-  literally *is* the first real Oracle-curve data point: candidates exist
-  whose outcomes differ, so "pick the best one" is a meaningful operation
-  to measure at all.
+**The first outcome-script version had two design bugs, caught before a
+real run consumed the budget on a meaningless result:**
+
+1. **`max_outcome_trials=5` is too few to conclude "no diversity."** A
+   5-trial run that comes back all-same isn't strong evidence -- if the
+   true rate at which candidates diverge is low but real, 5 samples can
+   easily miss it entirely, and reporting `FAIL` off that would be wrong.
+   Early-stopping the moment a mix IS observed is still correct (a mix is
+   conclusive on its own, however few trials it took) -- the fix only
+   raises the ceiling for the all-same case: **`n_candidates=64`**, not 5.
+2. **Source episodes were always a SUCCESS episode.** Branching at 50%
+   into an already-successful trajectory near-guarantees the base policy
+   also succeeds after handoff, essentially regardless of which candidate
+   ran -- the arm is already on a good path. That measures "does resuming
+   a good trajectory still work" (trivially yes), not "does candidate
+   choice matter" -- unrelated to what Gate 2 is actually asking. Real
+   Gate-1 data has the fix on hand: task 0 finished 12/20, so 8 recorded
+   FAILURE episodes already exist to branch from instead of always episode
+   0. **Failure-source branch points are the ones that matter** --
+   "was on track to fail, but a good candidate at the decisive moment
+   flipped it to success" is the literal mechanism that makes an Oracle
+   curve rise above the base policy's own success rate. A mixed result
+   branching from a success episode doesn't demonstrate that; a mixed
+   result branching from a failure episode does.
+
+**Fix:** `source_episode_seeds` (`GateTwoOutcomeConfig`) is now a dict of
+`task_id -> list of episode_seeds`, not one scalar shared seed -- pick a
+mix per task (roughly 2 success + 2 failure is a reasonable start,
+weighted toward failure since that's the informative case). Find real
+seeds instead of guessing them:
+```
+python scripts/list_source_episode_outcomes.py \
+    --source-output-root /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1 \
+    --condition policy_rollout --task-suite libero_spatial --task-id 0
+```
+prints every recorded seed's real `episode_success` for that task, reading
+directly from the same Gate-1 recordings (no seed numbers invented).
+`configs/gate2_outcome.yaml`'s `source_episode_seeds` ships with
+placeholder seeds (`[0, 1, 2, 3]` per task) -- **replace them with real
+seeds from this script's output before running for real.**
+
+**Verdict, per (task, source_episode_seed) branch point:**
+- `mixed` = the `n_candidates` (up to 64, early-stopped once mixed)
+  outcomes contain both a success and a failure.
+- `is_primary_signal` = `mixed AND the source episode was a FAILURE` --
+  this is what actually decides Gate 2. A mixed result from a
+  SUCCESS-source point is recorded (genuinely means something -- some
+  candidate broke a good trajectory) but is not decisive on its own, per
+  problem 2 above.
+- **Gate 2 PASSES if `is_primary_signal` is true for at least one (task,
+  seed) point** -- real evidence exists that candidate choice can rescue
+  an otherwise-failing episode. All candidates at a point landing the SAME
+  result (regardless of the source's own outcome) is evidence against
+  usefulness at that specific point, but doesn't alone fail the whole
+  gate -- only the absence of ANY primary-signal pass across every tested
+  point does.
 
 **Cost note:** `max_steps` for the outcome script is 200, not Gate-1's
 520 -- success trajectories measured so far run 66-121 steps, so 200
 leaves real margin while substantially cutting the cost of failure
-episodes (which no longer run to 520 before terminating).
+episodes (which no longer run to 520 before terminating). Raising
+`n_candidates` to 64 and testing multiple seeds per task multiplies total
+cost considerably versus the first (invalid) design -- budgeted
+knowingly, not hidden, since a cheaper-but-wrong measurement isn't
+actually cheaper.
 
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/run_gate2_diversity.py \
@@ -2322,7 +2358,9 @@ episodes (which no longer run to 520 before terminating).
 ```
 Diagnostic only -- let the already-running 0.7 point finish (it's the last
 fraction in the sweep, nothing further to add), but its result does not
-feed into a Gate 2 decision. The actual verdict:
+feed into a Gate 2 decision. Before the real verdict run, find real
+success/failure seeds per task (see above), fill them into
+`configs/gate2_outcome.yaml`'s `source_episode_seeds`, then:
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/run_gate2_outcome.py \
     --config {XGAP_DRIVE_ROOT}/configs/gate2_outcome.yaml

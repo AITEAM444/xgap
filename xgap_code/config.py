@@ -341,22 +341,52 @@ class GateTwoOutcomeConfig:
     `exec_horizon=10` is shorter than the gripper's own actuation lag
     (15-20 steps, `gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS`) --
     a real timing difference between candidates has no way to show up as a
-    physical endpoint difference within 10 steps. The metric was measuring
-    the wrong window, not reporting a true absence of consequential
-    diversity. Endpoint-variance measurement stops once the
-    branch_step_fractions=0.7 sweep point finishes; it is kept only as
-    diagnostic evidence for why this outcome-based approach was needed,
-    not as a Gate 2 input.
+    physical endpoint difference within 10 steps. Endpoint-variance
+    measurement stops once the branch_step_fractions=0.7 sweep point
+    finishes; kept only as diagnostic evidence, not a Gate 2 input.
 
-    This settles the question directly instead: at a branch point, sample
-    ONE candidate, commit its first `exec_horizon` steps, then hand off to
-    the BASE POLICY (closed-loop, `policy_rollout.step_with_policy_until_done`)
-    for the rest of the episode -- literally "Oracle" in miniature -- and
-    record whether the episode succeeds. Repeat with fresh candidates
-    (fresh env each time, per Test 2's binding design rule) up to
-    `max_outcome_trials`, stopping EARLY as soon as both a success and a
-    failure have been observed (mixed outcomes alone already answer the
-    question -- no need to burn the full budget once they do).
+    Two design bugs in the first outcome-script attempt, both fixed here,
+    not just relaxed:
+
+    1. **`n_candidates` must actually be ~64, not 5.** A run of only 5
+       trials that comes back all-same is NOT enough evidence to declare
+       "no diversity that matters" -- with a true mix rate that just
+       happens to be rare, 5 samples can easily miss it. Early-stopping
+       the moment a mix IS observed (cheap, and already conclusive) is
+       still correct and kept; the fix is raising the ceiling for the
+       all-same case from 5 to 64 before concluding FAIL.
+    2. **Source episodes must include real FAILURES, not only successes.**
+       Branching at 50% into an already-successful demo near-guarantees
+       the handed-off base policy also succeeds, regardless of which
+       candidate was committed -- that tests "does resuming a good
+       trajectory still work", not "does candidate choice matter", and
+       says nothing about Gate 2. Failure-source branch points are the
+       ones that actually matter: "was about to fail, but a good candidate
+       flipped it to success" is the literal mechanism an Oracle curve
+       measures. `source_episode_seeds` is therefore a dict keyed by
+       `task_id` (not one scalar seed) -- pick a mix per task (~2 success +
+       ~2 failure is a reasonable starting point), found via
+       `scripts/list_source_episode_outcomes.py` against the real Gate-1
+       recordings rather than guessed.
+
+    At each (task_id, seed) branch point: sample ONE candidate, commit its
+    first `exec_horizon` steps, hand off to the BASE POLICY (closed-loop,
+    `policy_rollout.step_with_policy_until_done`) for the rest of the
+    episode -- literally "Oracle" in miniature -- and record whether the
+    episode succeeds. Repeat with fresh candidates (fresh env each time,
+    per Test 2's binding design rule) up to `n_candidates`, stopping EARLY
+    once both a success and a failure have been observed.
+
+    Verdict per point: `mixed` if outcomes contain both a success and a
+    failure. The `is_primary_signal` -- the one that actually decides Gate
+    2 -- is `mixed AND source was a FAILURE episode`: this is the direct
+    "Oracle can rescue a near-failure" evidence. A mixed result from a
+    SUCCESS-source point is recorded but not decisive on its own (see
+    module docstring problem 2). Gate 2 passes if `is_primary_signal` is
+    true for at least one (task, seed) point; regardless of source
+    outcome, any point where all candidates land the SAME result is
+    evidence against that specific point (not automatically an overall
+    Gate 2 failure by itself -- see README "Gate 2, corrected").
 
     `branch_fraction` is FIXED at 0.5 by direct decision (not derived from
     the now-invalidated endpoint-variance sweep) -- single value, not a
@@ -373,17 +403,21 @@ class GateTwoOutcomeConfig:
 
     source_output_root: str = ""
     source_condition: str = "policy_rollout"
-    source_episode_seed: int = 0
+    # task_id -> list of episode_seeds to branch from for that task -- a mix
+    # of real recorded successes AND failures (see class docstring, problem
+    # 2). Must have a non-empty entry for every task_id in `task_ids`.
+    source_episode_seeds: dict[int, list[int]] = field(default_factory=dict)
 
     branch_fraction: float = 0.5
 
     # Steps of the sampled candidate's OWN chunk committed before handing off
     # to the base policy -- same role as GateTwoDiversityConfig's exec_horizon.
     exec_horizon: int = 10
-    # Upper bound on candidates actually tested to completion; early-stops
-    # once a mix of success/failure is observed (3-5 is expected to be
-    # enough in practice -- see README "Gate 2: outcome-based verdict").
-    max_outcome_trials: int = 5
+    # Candidates tested per (task, source seed) branch point, early-stopping
+    # once a mix of success/failure is observed. 64, not 5 (see class
+    # docstring, problem 1) -- 5 trials all landing the same result is not
+    # enough evidence to conclude "no diversity that matters".
+    n_candidates: int = 64
     # Episode cap AFTER the handoff -- lower than Gate-1's 520 on purpose:
     # success trajectories ran 66-121 steps, so 200 leaves real margin while
     # cutting failure-episode cost substantially (failures no longer run to
@@ -401,12 +435,23 @@ class GateTwoOutcomeConfig:
             raise ValueError("task_ids must be non-empty")
         if not self.source_output_root:
             raise ValueError("source_output_root must be set (where to read prefix episodes from)")
+        if not self.source_episode_seeds:
+            raise ValueError(
+                "source_episode_seeds must be set -- a dict of task_id -> list of episode_seeds "
+                "mixing real success AND failure episodes (see class docstring, problem 2)"
+            )
+        missing = [t for t in self.task_ids if t not in self.source_episode_seeds]
+        if missing:
+            raise ValueError(f"source_episode_seeds missing entries for task_ids {missing}")
+        empty = [t for t, seeds in self.source_episode_seeds.items() if not seeds]
+        if empty:
+            raise ValueError(f"source_episode_seeds has empty seed lists for task_ids {empty}")
         if not (0.0 < self.branch_fraction < 1.0):
             raise ValueError(f"branch_fraction must be in (0, 1), got {self.branch_fraction}")
         if self.control_mode not in ("relative", "absolute"):
             raise ValueError(f"invalid control_mode '{self.control_mode}'")
-        if self.max_outcome_trials < 1:
-            raise ValueError("max_outcome_trials must be >= 1")
+        if self.n_candidates < 1:
+            raise ValueError("n_candidates must be >= 1")
 
     @classmethod
     def from_yaml(cls, path: str) -> "GateTwoOutcomeConfig":

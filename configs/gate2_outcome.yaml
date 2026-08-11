@@ -1,6 +1,7 @@
 # Gate 2, outcome-based verdict: does candidate diversity actually change
-# whether the episode succeeds? See README "Gate 2: outcome-based verdict"
-# and scripts/run_gate2_outcome.py's module docstring.
+# whether the episode succeeds? See README "Gate 2, corrected: outcome
+# must branch from failures too" and scripts/run_gate2_outcome.py's module
+# docstring.
 #
 # branch_fraction: FIXED at 0.5 by direct decision, not derived from the
 # gate2_diversity.yaml sweep -- that sweep's endpoint_variance metric is
@@ -24,12 +25,25 @@ checkpoint_hash: unknown
 # Same shared source as gate2_diversity.yaml -- real recorded Gate-1 episodes.
 source_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1
 source_condition: policy_rollout
-source_episode_seed: 0
+
+# PLACEHOLDER seeds below -- REPLACE before running for real. Run
+# scripts/list_source_episode_outcomes.py per task first:
+#   python scripts/list_source_episode_outcomes.py \
+#       --source-output-root /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1 \
+#       --condition policy_rollout --task-suite libero_spatial --task-id 0
+# then pick ~2 real success seeds + ~2 real failure seeds per task from its
+# printed list (failure seeds matter more -- see module docstring, problem 2).
+# Every task_id above must have a non-empty entry here.
+source_episode_seeds:
+  0: [0, 1, 2, 3]
+  2: [0, 1, 2, 3]
+  4: [0, 1, 2, 3]
+  5: [0, 1, 2, 3]
 
 branch_fraction: 0.5
 
 exec_horizon: 10
-max_outcome_trials: 5
+n_candidates: 64
 max_steps: 200
 
 control_mode: relative
