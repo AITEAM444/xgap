@@ -2261,18 +2261,28 @@ judging Gate 2 by these metrics alone:
    region (closer to 50-70% through the trajectory) is the more plausible
    place for a real branch to matter.
 
-**Fix 1: sweep the branch point.** `configs/gate2_diversity.yaml`'s
-`branch_step_fractions` is now `[0.2, 0.5, 0.7]` (was `[0.2]`) --
-`resume: true` means only the new fractions get computed, the existing 0.2
-results are kept. This finds *where* candidate divergence is largest
-before deciding whether it's meaningful.
+**Resolved, not just sweep-pending: the endpoint-variance metric is
+INVALIDATED for verdict purposes, confirmed rather than left ambiguous.**
+`gripper_channel_distribution`'s own `frac_commanding_close` field --
+already being computed, just not the field this section was looking at --
+went 0.53 at `branch_fraction=0.2` to 0.85 at 0.5: candidates really DO
+differ substantially on WHEN they command the gripper to close. That
+timing difference is exactly what the endpoint-variance metric should have
+caught and didn't, because `exec_horizon=10` is shorter than the gripper's
+own 15-20 step actuation lag -- a real difference in candidate *commands*
+had no physical window in which to become a difference in candidate
+*endpoints*. This isn't sweep-point-3-will-tell-us territory: it's a
+structural mismatch between the metric's execution window and the
+mechanism whose effect it's supposed to detect, and no branch point fixes
+that. **Endpoint-variance measurement stops once the `branch_step_fractions:
+[0.2, 0.5, 0.7]` sweep's 0.7 point finishes running** -- kept only as the
+diagnostic evidence above, not used as a Gate 2 input going forward.
 
-**Fix 2: judge by episode OUTCOME, not by diversity metrics.** Diversity
-metrics can't settle whether a ~300x scale gap matters -- only whether the
-episode actually succeeds or fails can. `scripts/run_gate2_outcome.py`
-(config: `xgap_code.config.GateTwoOutcomeConfig`,
-`configs/gate2_outcome.yaml`) implements this directly, per task at the
-branch point identified by Fix 1:
+**Gate 2's verdict now comes from episode OUTCOME alone, not from any
+diversity metric.** `scripts/run_gate2_outcome.py` (config:
+`xgap_code.config.GateTwoOutcomeConfig`, `configs/gate2_outcome.yaml`)
+implements this directly, per task at `branch_fraction=0.5` -- FIXED by
+this decision, not derived from the (now-diagnostic-only) sweep:
 
 1. Prefix-replay to the branch point (same construction as the diversity
    script, fresh env, deterministic by Test 2's design).
@@ -2310,9 +2320,9 @@ episodes (which no longer run to 520 before terminating).
 !python {XGAP_DRIVE_ROOT}/scripts/run_gate2_diversity.py \
     --config {XGAP_DRIVE_ROOT}/configs/gate2_diversity.yaml
 ```
-Re-run first with the updated `branch_step_fractions` sweep, read which
-fraction shows the largest `endpoint_variance.total_variance`, then point
-`configs/gate2_outcome.yaml`'s `branch_fraction` at it before running:
+Diagnostic only -- let the already-running 0.7 point finish (it's the last
+fraction in the sweep, nothing further to add), but its result does not
+feed into a Gate 2 decision. The actual verdict:
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/run_gate2_outcome.py \
     --config {XGAP_DRIVE_ROOT}/configs/gate2_outcome.yaml

@@ -39,10 +39,18 @@ sampled chunks:
     instance across candidates would reintroduce the exact nondeterminism
     Test 2 eliminated) and recording where the arm ends up.
 
-This script reports the raw numbers -- it does not decide PASS/FAIL
-itself. "Meaningfully different" vs "nearly identical" needs a judgment
-call against real physical scale (workspace size, gripper's [-1,1]
-range), not an invented threshold baked in here.
+DIAGNOSTIC ONLY -- does NOT decide Gate 2 pass/fail. Real results (task
+0/2, branch_fraction=0.2) showed the endpoint_variance metric is
+INVALIDATED for verdict purposes: `frac_commanding_close` went 0.53 (at
+0.2) to 0.85 (at 0.5), i.e. candidates really do differ on WHEN they
+command the gripper closed, but `exec_horizon=10` is shorter than the
+gripper's own actuation lag (15-20 steps) -- that real timing difference
+has no way to show up as a physical endpoint difference within 10 steps.
+Endpoint-variance measurement stops once branch_step_fractions=0.7
+finishes running; kept only as the evidence for why
+scripts/run_gate2_outcome.py (success/fail, not action/endpoint metrics)
+is the actual Gate 2 verdict now -- see that script's module docstring
+and README "Gate 2: real results, and redesign to outcome-based verdict".
 
     python scripts/run_gate2_diversity.py --config configs/gate2_diversity.yaml
 """

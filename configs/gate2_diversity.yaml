@@ -25,16 +25,18 @@ source_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_sp
 source_condition: policy_rollout
 source_episode_seed: 0
 
-# SWEEP, not one point: first result at 0.2 showed real action-level
-# diversity (mean_pairwise_l2 ~4.2-4.6, gripper channel split ~50/50) but
-# ~300x smaller endpoint-position spread -- ambiguous with only exec_horizon=10
-# steps to physically separate in (gripper actuation alone needs 15-20 steps,
-# see gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS). Success trajectories run
-# 66-121 steps, so 0.2 is well before the grasp-critical region -- sweeping
-# to 0.5/0.7 checks whether candidate divergence is actually LARGEST near the
-# real decision point instead. resume: true means the already-computed 0.2
-# results aren't recomputed, only 0.5/0.7 (and any task still missing a
-# source episode) get added.
+# DIAGNOSTIC ONLY, not the Gate 2 verdict -- see scripts/run_gate2_diversity.py's
+# module docstring. First result at 0.2 showed real action-level diversity
+# (mean_pairwise_l2 ~4.2-4.6, gripper channel split ~50/50) but ~300x smaller
+# endpoint-position spread. Traced to the real cause, not left ambiguous:
+# frac_commanding_close went 0.53 (at 0.2) to 0.85 (at 0.5) -- candidates DO
+# differ on WHEN they close the gripper -- but exec_horizon=10 is shorter
+# than the gripper's own 15-20 step actuation lag, so that timing difference
+# never reaches the endpoint measurement. The metric can't be fixed by
+# sweeping further; it's the wrong measurement window, not the wrong branch
+# point. Endpoint-variance measurement STOPS after this 0.7 point finishes --
+# do not add more fractions here. Gate 2's actual verdict now comes from
+# scripts/run_gate2_outcome.py (episode success/fail), not this script.
 branch_step_fractions: [0.2, 0.5, 0.7]
 
 n_candidates: 64

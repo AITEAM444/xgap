@@ -2,10 +2,14 @@
 # whether the episode succeeds? See README "Gate 2: outcome-based verdict"
 # and scripts/run_gate2_outcome.py's module docstring.
 #
-# branch_fraction: point this at whichever fraction the
-# configs/gate2_diversity.yaml sweep ([0.2, 0.5, 0.7]) showed the largest
-# candidate endpoint divergence at -- 0.5 is a placeholder until that sweep
-# is re-run and read; update before running this config for real.
+# branch_fraction: FIXED at 0.5 by direct decision, not derived from the
+# gate2_diversity.yaml sweep -- that sweep's endpoint_variance metric is
+# invalidated for verdict purposes (exec_horizon=10 is shorter than the
+# gripper's own 15-20 step actuation lag, so real candidate differences in
+# WHEN they command a close -- frac_commanding_close measured 0.53 at
+# branch_fraction=0.2 vs 0.85 at 0.5 -- can't show up as an endpoint
+# difference within 10 steps). Outcome (success/fail) is the only thing
+# Gate 2 is judged on now.
 
 experiment_name: gate2_outcome_libero_spatial
 

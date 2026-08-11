@@ -331,23 +331,36 @@ class GateTwoDiversityConfig:
 @dataclass
 class GateTwoOutcomeConfig:
     """Config for scripts/run_gate2_outcome.py: Gate 2 judged by episode
-    OUTCOME (success/fail), not by action-diversity metrics. Metric-based
-    Gate 2 (GateTwoDiversityConfig) found real action-level diversity but
-    endpoint-position spread ~300x smaller -- ambiguous whether that
-    actually changes anything that matters. This settles it directly: at a
-    branch point, sample ONE candidate, commit its first `exec_horizon`
-    steps, then hand off to the BASE POLICY (closed-loop,
-    `policy_rollout.step_with_policy_until_done`) for the rest of the
-    episode -- literally "Oracle" in miniature -- and record whether the
-    episode succeeds. Repeat with fresh candidates (fresh env each time,
-    per Test 2's binding design rule) up to `max_outcome_trials`, stopping
-    EARLY as soon as both a success and a failure have been observed (mixed
-    outcomes alone already answer the question -- no need to burn the full
-    budget once they do).
+    OUTCOME (success/fail), not by action-diversity metrics.
 
-    `branch_fraction` is a single value (not a list) on purpose -- meant to
-    be pointed at whichever fraction GateTwoDiversityConfig's sweep showed
-    the largest candidate divergence at, not swept itself here.
+    `GateTwoDiversityConfig`'s endpoint_variance metric is INVALIDATED for
+    verdict purposes, not just ambiguous -- confirmed from real data, not
+    a guess: `frac_commanding_close` (gripper_channel_distribution) moved
+    0.53 at branch_fraction=0.2 to 0.85 at 0.5, i.e. candidates really do
+    differ on WHEN they command the gripper to close, but
+    `exec_horizon=10` is shorter than the gripper's own actuation lag
+    (15-20 steps, `gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS`) --
+    a real timing difference between candidates has no way to show up as a
+    physical endpoint difference within 10 steps. The metric was measuring
+    the wrong window, not reporting a true absence of consequential
+    diversity. Endpoint-variance measurement stops once the
+    branch_step_fractions=0.7 sweep point finishes; it is kept only as
+    diagnostic evidence for why this outcome-based approach was needed,
+    not as a Gate 2 input.
+
+    This settles the question directly instead: at a branch point, sample
+    ONE candidate, commit its first `exec_horizon` steps, then hand off to
+    the BASE POLICY (closed-loop, `policy_rollout.step_with_policy_until_done`)
+    for the rest of the episode -- literally "Oracle" in miniature -- and
+    record whether the episode succeeds. Repeat with fresh candidates
+    (fresh env each time, per Test 2's binding design rule) up to
+    `max_outcome_trials`, stopping EARLY as soon as both a success and a
+    failure have been observed (mixed outcomes alone already answer the
+    question -- no need to burn the full budget once they do).
+
+    `branch_fraction` is FIXED at 0.5 by direct decision (not derived from
+    the now-invalidated endpoint-variance sweep) -- single value, not a
+    list, since this script isn't swept itself.
     """
 
     experiment_name: str

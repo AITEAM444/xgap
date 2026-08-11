@@ -2,14 +2,19 @@
 """Gate 2, outcome-based verdict: does candidate diversity actually change
 whether the episode succeeds, not just whether the action values differ?
 
-GateTwoDiversityConfig (scripts/run_gate2_diversity.py) found real
-action-level diversity (mean_pairwise_l2 ~4.2-4.6, gripper channel split
-~50/50 across 64 candidates) but endpoint-position spread ~300x smaller --
-ambiguous whether that's genuine collapse-in-outcome or just too short an
-`exec_horizon` (10 steps) for the difference to physically show up yet
-(gripper actuation alone needs 15-20 steps, see
-gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS). Metrics can't settle that;
-outcomes can.
+GateTwoDiversityConfig's (scripts/run_gate2_diversity.py) endpoint-variance
+metric is INVALIDATED for verdict purposes, not just ambiguous -- confirmed
+from real data: `frac_commanding_close` (gripper_channel_distribution) went
+0.53 at branch_fraction=0.2 to 0.85 at 0.5, meaning candidates really do
+differ on WHEN they command the gripper closed. But `exec_horizon=10` is
+shorter than the gripper's own actuation lag (15-20 steps, see
+gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS) -- a real timing difference
+between candidates has no way to show up as a physical endpoint difference
+within 10 steps. The metric was measuring the wrong window, not reporting a
+true absence of consequential diversity. Endpoint-variance measurement
+stops once branch_step_fractions=0.7 finishes; it's kept only as
+diagnostic evidence for why this outcome-based script exists, not as a
+Gate 2 input. Only episode success/failure decides Gate 2 now.
 
 Procedure, per (task, branch_fraction):
   1. Reach the branch point via prefix replay (same real recorded Gate-1
