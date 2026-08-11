@@ -28,6 +28,6 @@ max_steps: 520
 control_mode: relative
 control_freq: 20
 
-sync_every_n_episodes: 5
+sync_every_n_episodes: 1
 
 resume: true
