@@ -1,7 +1,19 @@
-# Gate 2, outcome-based verdict: does candidate diversity actually change
-# whether the episode succeeds? See README "Gate 2, corrected: outcome
-# must branch from failures too" and scripts/run_gate2_outcome.py's module
-# docstring.
+# Gate 2, outcome-based verdict -- PILOT scale: 1 task, 2 seeds (1 failure
+# + 1 success), ~5 hours instead of the full 4-task x 4-seed run's ~74
+# hours. A single failure-source seed with n_candidates=64 each already
+# gives a verdict (see module docstring's "is_primary_signal" -- one
+# failure-source point showing a mixed outcome is sufficient on its own);
+# the success-source seed here is a CONTRAST run, not required for the
+# verdict itself, but cheap to include and confirms the harness behaves as
+# expected (near-always-success from a good trajectory).
+#
+# If genuinely in a hurry: comment out the success seed below and run only
+# the failure seed -- that alone answers "does Gate 2 pass or fail".
+#
+# Once this pilot passes (is_primary_signal true for the failure seed),
+# scale up via configs/gate2_outcome_full.yaml (4 tasks x 4 seeds). See
+# README "Gate 2, corrected: outcome must branch from failures too" and
+# scripts/run_gate2_outcome.py's module docstring.
 #
 # branch_fraction: FIXED at 0.5 by direct decision, not derived from the
 # gate2_diversity.yaml sweep -- that sweep's endpoint_variance metric is
@@ -12,13 +24,13 @@
 # difference within 10 steps). Outcome (success/fail) is the only thing
 # Gate 2 is judged on now.
 
-experiment_name: gate2_outcome_libero_spatial
+experiment_name: gate2_outcome_libero_spatial_pilot
 
 local_output_root: outputs/gate2_outcome/_local
 remote_output_root: /content/drive/MyDrive/xgap/outputs/gate2_outcome
 
 task_suite: libero_spatial
-task_ids: [0, 2, 4, 5]
+task_ids: [0]
 checkpoint_path: HuggingFaceVLA/smolvla_libero
 checkpoint_hash: unknown
 
@@ -26,19 +38,18 @@ checkpoint_hash: unknown
 source_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1
 source_condition: policy_rollout
 
-# PLACEHOLDER seeds below -- REPLACE before running for real. Run
-# scripts/list_source_episode_outcomes.py per task first:
+# PLACEHOLDER seeds below (999/998 -- deliberately out of range, so
+# load_source_episode's own FileNotFoundError fails loudly instead of
+# silently running against the wrong episode if you forget to replace
+# these). Run scripts/list_source_episode_outcomes.py against task 0 first:
 #   python scripts/list_source_episode_outcomes.py \
 #       --source-output-root /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1 \
 #       --condition policy_rollout --task-suite libero_spatial --task-id 0
-# then pick ~2 real success seeds + ~2 real failure seeds per task from its
-# printed list (failure seeds matter more -- see module docstring, problem 2).
-# Every task_id above must have a non-empty entry here.
+# then set the FIRST seed to a real FAILURE episode (this is the one that
+# decides the pilot -- run it first, see module comment above) and the
+# SECOND to a real SUCCESS episode (contrast only).
 source_episode_seeds:
-  0: [0, 1, 2, 3]
-  2: [0, 1, 2, 3]
-  4: [0, 1, 2, 3]
-  5: [0, 1, 2, 3]
+  0: [999, 998]  # [failure_seed_PLACEHOLDER, success_seed_PLACEHOLDER]
 
 branch_fraction: 0.5
 

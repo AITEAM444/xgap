@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -93,10 +94,12 @@ def run_one_candidate_outcome(
     task_description: str,
     exec_horizon: int,
     max_steps: int,
-) -> bool:
+) -> tuple[bool, int]:
     """Fresh env, reach branch state, sample ONE candidate chunk, commit its
     first exec_horizon steps, then hand off to the base policy until
-    success/termination/max_steps. Returns episode_success."""
+    success/termination/max_steps. Returns (episode_success, total_steps_run)
+    -- total_steps_run includes the prefix, so it's directly comparable to
+    the source episode's own rollout_length."""
     import torch
 
     env, obs = reach_branch_state(
@@ -132,14 +135,14 @@ def run_one_candidate_outcome(
             if info.get("is_success", False):
                 success = True
             if terminated or truncated:
-                return success
+                return success, step_count
 
         # Clear the policy's own action queue before handing off to closed-loop
         # control -- candidate sampling used predict_action_chunk() directly and
         # never touched it, but stale queue state from a PREVIOUS trial's handoff
         # could otherwise leak into this one.
         policy.reset()
-        handoff_success, _n_steps, _actions, _states = step_with_policy_until_done(
+        handoff_success, n_steps, _actions, _states = step_with_policy_until_done(
             env,
             obs,
             policy,
@@ -151,7 +154,7 @@ def run_one_candidate_outcome(
             max_steps=max_steps,
             start_step=step_count,
         )
-        return success or handoff_success
+        return success or handoff_success, n_steps
     finally:
         env.close()
 
@@ -189,7 +192,8 @@ def run_one_branch_point(
 
     outcomes: list[bool] = []
     for trial in range(cfg.n_candidates):
-        success = run_one_candidate_outcome(
+        t_start = time.perf_counter()
+        success, total_steps = run_one_candidate_outcome(
             task_suite=cfg.task_suite,
             task_id=task_id,
             episode_seed=seed,
@@ -205,7 +209,10 @@ def run_one_branch_point(
             exec_horizon=cfg.exec_horizon,
             max_steps=cfg.max_steps,
         )
+        elapsed = time.perf_counter() - t_start
         outcomes.append(success)
+        print(f"    candidate={trial + 1}/{cfg.n_candidates} success={success} "
+              f"rollout_length={total_steps} elapsed={elapsed:.1f}s")
         if any(outcomes) and not all(outcomes):
             print(f"  seed={seed}: mixed outcome reached after {trial + 1} candidate(s) -- stopping early")
             break

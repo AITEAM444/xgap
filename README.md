@@ -2343,14 +2343,31 @@ seeds from this script's output before running for real.**
   gate -- only the absence of ANY primary-signal pass across every tested
   point does.
 
-**Cost note:** `max_steps` for the outcome script is 200, not Gate-1's
-520 -- success trajectories measured so far run 66-121 steps, so 200
-leaves real margin while substantially cutting the cost of failure
-episodes (which no longer run to 520 before terminating). Raising
-`n_candidates` to 64 and testing multiple seeds per task multiplies total
-cost considerably versus the first (invalid) design -- budgeted
-knowingly, not hidden, since a cheaper-but-wrong measurement isn't
-actually cheaper.
+**Cost note, revised after the first real run:** measured per-candidate
+cost is ~260s average (prefix replay + up to `exec_horizon` committed
+steps + base-policy handoff up to `max_steps=200`) -- the full 4-task x
+4-seed x 64-candidate design (`configs/gate2_outcome_full.yaml`) is
+**~74 hours**, not a quick check. `max_steps=200` (not Gate-1's 520) was
+already the design from the start of this script, not a change -- success
+trajectories measured so far run 66-121 steps, so 200 leaves real margin
+while substantially cutting failure-episode cost versus a 520 cap.
+
+**Pilot first, not the full design.** `configs/gate2_outcome.yaml` is now
+the PILOT config -- 1 task (task 0), 2 seeds (1 failure + 1 success,
+~5 hours) -- not the full 4-task sweep. A single failure-source seed with
+`n_candidates=64` already gives a real verdict on its own (that's exactly
+what `is_primary_signal` measures); the success-source seed is a contrast
+run, not required for the verdict. **If genuinely in a hurry, comment out
+the success seed and run only the failure seed** -- that alone answers
+pass/fail. Scale up to the full design
+(`configs/gate2_outcome_full.yaml`) only after the pilot passes.
+
+**Progress logging, added after the first real run went quiet for
+minutes at a time with no output** (not stalled -- 64 candidates run
+serially to completion, ~260s each): every candidate now prints
+`candidate=k/n success=... rollout_length=... elapsed=...` as it
+finishes, so a long silence during a real run is visibly distinguishable
+from a hang.
 
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/run_gate2_diversity.py \
@@ -2359,8 +2376,11 @@ actually cheaper.
 Diagnostic only -- let the already-running 0.7 point finish (it's the last
 fraction in the sweep, nothing further to add), but its result does not
 feed into a Gate 2 decision. Before the real verdict run, find real
-success/failure seeds per task (see above), fill them into
-`configs/gate2_outcome.yaml`'s `source_episode_seeds`, then:
+success/failure seeds for task 0 (see above), fill them into
+`configs/gate2_outcome.yaml`'s `source_episode_seeds` (replacing the
+deliberately-invalid `999`/`998` placeholders -- `load_source_episode`
+fails loudly if they're left in, rather than silently running the wrong
+episode), then the pilot:
 ```
 !python {XGAP_DRIVE_ROOT}/scripts/run_gate2_outcome.py \
     --config {XGAP_DRIVE_ROOT}/configs/gate2_outcome.yaml

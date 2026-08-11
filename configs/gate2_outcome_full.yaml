@@ -1,0 +1,53 @@
+# Gate 2, outcome-based verdict -- FULL SCALE (4 tasks x 4 seeds each).
+# Run configs/gate2_outcome.yaml (the pilot: 1 task, 2 seeds) FIRST -- only
+# scale up to this once the pilot passes (is_primary_signal true for the
+# failure-source seed). See README "Gate 2, corrected" and
+# scripts/run_gate2_outcome.py's module docstring.
+#
+# branch_fraction: FIXED at 0.5 by direct decision, not derived from the
+# gate2_diversity.yaml sweep -- that sweep's endpoint_variance metric is
+# invalidated for verdict purposes (exec_horizon=10 is shorter than the
+# gripper's own 15-20 step actuation lag, so real candidate differences in
+# WHEN they command a close -- frac_commanding_close measured 0.53 at
+# branch_fraction=0.2 vs 0.85 at 0.5 -- can't show up as an endpoint
+# difference within 10 steps). Outcome (success/fail) is the only thing
+# Gate 2 is judged on now.
+
+experiment_name: gate2_outcome_libero_spatial_full
+
+local_output_root: outputs/gate2_outcome/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/gate2_outcome
+
+task_suite: libero_spatial
+task_ids: [0, 2, 4, 5]
+checkpoint_path: HuggingFaceVLA/smolvla_libero
+checkpoint_hash: unknown
+
+# Same shared source as gate2_diversity.yaml -- real recorded Gate-1 episodes.
+source_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1
+source_condition: policy_rollout
+
+# PLACEHOLDER seeds below -- REPLACE before running for real. Run
+# scripts/list_source_episode_outcomes.py per task first:
+#   python scripts/list_source_episode_outcomes.py \
+#       --source-output-root /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1 \
+#       --condition policy_rollout --task-suite libero_spatial --task-id 0
+# then pick ~2 real success seeds + ~2 real failure seeds per task from its
+# printed list (failure seeds matter more -- see module docstring, problem 2).
+# Every task_id above must have a non-empty entry here.
+source_episode_seeds:
+  0: [0, 1, 2, 3]
+  2: [0, 1, 2, 3]
+  4: [0, 1, 2, 3]
+  5: [0, 1, 2, 3]
+
+branch_fraction: 0.5
+
+exec_horizon: 10
+n_candidates: 64
+max_steps: 200
+
+control_mode: relative
+control_freq: 20
+
+resume: true
