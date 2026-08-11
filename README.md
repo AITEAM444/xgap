@@ -2227,6 +2227,97 @@ range), which is a design decision, not a fact to hardcode as a constant.
   addressing -- e.g. via the checkpoint, or via how candidates are
   selected -- before any best-of-N framing means anything).
 
+## Gate 2: real results, and redesign to outcome-based verdict
+
+First real results (task 0, task 2, `branch_step_fractions: [0.2]`,
+`n_candidates=64`, `exec_horizon=10`): genuine action-level diversity --
+`mean_pairwise_l2` ~4.2-4.6 across the candidate chunks, gripper channel
+split close to 50/50 across the 64 candidates -- but trajectory endpoint
+variance came back ~300x smaller in proportion than the action-level
+diversity that produced it (`endpoint_variance.total_variance` ~0.017 and
+~0.0136 for the two tasks), and per-dimension endpoint variance on the
+rotation axes was ~1e-11 -- effectively deterministic regardless of which
+candidate ran. Read plainly: candidates issue meaningfully different
+*commands*, but arrive at almost the *same place*.
+
+This overturns the read this section originally proposed ("candidates
+differ meaningfully -> pass, proceed to Oracle curve"). Two problems with
+judging Gate 2 by these metrics alone:
+
+1. **Scale gap, not proof of collapse.** A ~300x gap between action-space
+   diversity and outcome-space diversity could mean the policy's
+   differences don't matter (real collapse-in-effect), or it could mean
+   `exec_horizon=10` is simply too short a window for differences to
+   physically show up yet -- gripper actuation alone needs 15-20
+   consecutive "close" steps to register (`gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS`),
+   more than the whole execution window measured here.
+2. **Branch point may be too early.** `branch_step_fractions: [0.2]` was
+   chosen for cost reasons (see above), not because it's the most
+   informative point. Success trajectories run 66-121 steps; at 20% into
+   even the *shortest* of those, the arm is still well before the object --
+   "whatever action gets taken there gets corrected later" is a live
+   possibility, in which case measuring divergence there was never going
+   to show much regardless of true candidate diversity. The pre-grasp
+   region (closer to 50-70% through the trajectory) is the more plausible
+   place for a real branch to matter.
+
+**Fix 1: sweep the branch point.** `configs/gate2_diversity.yaml`'s
+`branch_step_fractions` is now `[0.2, 0.5, 0.7]` (was `[0.2]`) --
+`resume: true` means only the new fractions get computed, the existing 0.2
+results are kept. This finds *where* candidate divergence is largest
+before deciding whether it's meaningful.
+
+**Fix 2: judge by episode OUTCOME, not by diversity metrics.** Diversity
+metrics can't settle whether a ~300x scale gap matters -- only whether the
+episode actually succeeds or fails can. `scripts/run_gate2_outcome.py`
+(config: `xgap_code.config.GateTwoOutcomeConfig`,
+`configs/gate2_outcome.yaml`) implements this directly, per task at the
+branch point identified by Fix 1:
+
+1. Prefix-replay to the branch point (same construction as the diversity
+   script, fresh env, deterministic by Test 2's design).
+2. Sample ONE candidate action chunk (`predict_action_chunk(noise=None)`).
+3. Commit that candidate's first `exec_horizon` steps.
+4. Hand off to the **base policy**, closed-loop, for the rest of the
+   episode -- `policy_rollout.step_with_policy_until_done`, extracted from
+   `rollout_policy_episode`'s own inline loop specifically so it could be
+   reused starting mid-episode here instead of only from a fresh reset.
+   This is literally "Oracle" in miniature: one candidate branch, finished
+   by the policy that would run anyway.
+5. Record `episode_success`. Repeat with a FRESH candidate (fresh env each
+   time, Test 2's binding design rule) up to `max_outcome_trials` (default
+   5), **stopping early as soon as both a success and a failure have been
+   observed** -- a mix already answers the question, no need to burn the
+   full budget confirming it further.
+
+**Verdict rule, stated in advance so it can't be rationalized after the
+fact:**
+- All trials at a branch point come back the SAME (all success or all
+  failure) -> **Gate 2 fails** there -- candidates that differ in action
+  space converge to the same outcome anyway, so there is nothing for an
+  Oracle/World-model/Random comparison to select between.
+- A mix of success and failure -> **Gate 2 passes** -- and this result
+  literally *is* the first real Oracle-curve data point: candidates exist
+  whose outcomes differ, so "pick the best one" is a meaningful operation
+  to measure at all.
+
+**Cost note:** `max_steps` for the outcome script is 200, not Gate-1's
+520 -- success trajectories measured so far run 66-121 steps, so 200
+leaves real margin while substantially cutting the cost of failure
+episodes (which no longer run to 520 before terminating).
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/run_gate2_diversity.py \
+    --config {XGAP_DRIVE_ROOT}/configs/gate2_diversity.yaml
+```
+Re-run first with the updated `branch_step_fractions` sweep, read which
+fraction shows the largest `endpoint_variance.total_variance`, then point
+`configs/gate2_outcome.yaml`'s `branch_fraction` at it before running:
+```
+!python {XGAP_DRIVE_ROOT}/scripts/run_gate2_outcome.py \
+    --config {XGAP_DRIVE_ROOT}/configs/gate2_outcome.yaml
+```
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

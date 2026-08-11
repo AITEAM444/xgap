@@ -326,3 +326,81 @@ class GateTwoDiversityConfig:
         if unknown:
             raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
         return cls(**raw)
+
+
+@dataclass
+class GateTwoOutcomeConfig:
+    """Config for scripts/run_gate2_outcome.py: Gate 2 judged by episode
+    OUTCOME (success/fail), not by action-diversity metrics. Metric-based
+    Gate 2 (GateTwoDiversityConfig) found real action-level diversity but
+    endpoint-position spread ~300x smaller -- ambiguous whether that
+    actually changes anything that matters. This settles it directly: at a
+    branch point, sample ONE candidate, commit its first `exec_horizon`
+    steps, then hand off to the BASE POLICY (closed-loop,
+    `policy_rollout.step_with_policy_until_done`) for the rest of the
+    episode -- literally "Oracle" in miniature -- and record whether the
+    episode succeeds. Repeat with fresh candidates (fresh env each time,
+    per Test 2's binding design rule) up to `max_outcome_trials`, stopping
+    EARLY as soon as both a success and a failure have been observed (mixed
+    outcomes alone already answer the question -- no need to burn the full
+    budget once they do).
+
+    `branch_fraction` is a single value (not a list) on purpose -- meant to
+    be pointed at whichever fraction GateTwoDiversityConfig's sweep showed
+    the largest candidate divergence at, not swept itself here.
+    """
+
+    experiment_name: str
+    local_output_root: str
+    task_suite: str
+    task_ids: list[int]
+    checkpoint_path: str
+
+    remote_output_root: str | None = None
+
+    source_output_root: str = ""
+    source_condition: str = "policy_rollout"
+    source_episode_seed: int = 0
+
+    branch_fraction: float = 0.5
+
+    # Steps of the sampled candidate's OWN chunk committed before handing off
+    # to the base policy -- same role as GateTwoDiversityConfig's exec_horizon.
+    exec_horizon: int = 10
+    # Upper bound on candidates actually tested to completion; early-stops
+    # once a mix of success/failure is observed (3-5 is expected to be
+    # enough in practice -- see README "Gate 2: outcome-based verdict").
+    max_outcome_trials: int = 5
+    # Episode cap AFTER the handoff -- lower than Gate-1's 520 on purpose:
+    # success trajectories ran 66-121 steps, so 200 leaves real margin while
+    # cutting failure-episode cost substantially (failures no longer run to
+    # 520).
+    max_steps: int = 200
+
+    checkpoint_hash: str = "unknown"
+    control_mode: str = "relative"
+    control_freq: int = 20
+
+    resume: bool = True
+
+    def __post_init__(self):
+        if not self.task_ids:
+            raise ValueError("task_ids must be non-empty")
+        if not self.source_output_root:
+            raise ValueError("source_output_root must be set (where to read prefix episodes from)")
+        if not (0.0 < self.branch_fraction < 1.0):
+            raise ValueError(f"branch_fraction must be in (0, 1), got {self.branch_fraction}")
+        if self.control_mode not in ("relative", "absolute"):
+            raise ValueError(f"invalid control_mode '{self.control_mode}'")
+        if self.max_outcome_trials < 1:
+            raise ValueError("max_outcome_trials must be >= 1")
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "GateTwoOutcomeConfig":
+        with open(path, encoding="utf-8") as f:
+            raw: dict[str, Any] = yaml.safe_load(f)
+        known = {k for k in cls.__dataclass_fields__}
+        unknown = set(raw) - known
+        if unknown:
+            raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
+        return cls(**raw)

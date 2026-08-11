@@ -141,6 +141,78 @@ def build_policy_observation(
     return preprocessor(batched_obs)
 
 
+def step_with_policy_until_done(
+    env: Any,
+    obs: dict,
+    policy: Any,
+    *,
+    preprocessor: Any,
+    postprocessor: Any,
+    env_preprocessor: Any,
+    preprocess_observation_fn: Any,
+    task_description: str,
+    max_steps: int,
+    start_step: int = 0,
+    timer: StageTimer | None = None,
+) -> tuple[bool, int, list[list[float]], list[list[float]]]:
+    """Closed-loop policy stepping (one policy.select_action() call per env
+    step) from an ALREADY-IN-PROGRESS (env, obs) -- does not reset() or call
+    policy.reset() itself, so this works identically whether `obs` came from
+    a fresh env.reset() (rollout_policy_episode's own use) or from partway
+    through an episode (scripts/run_gate2_outcome.py: after committing a
+    sampled candidate's own actions, hand off to the BASE POLICY via this
+    same function to see whether the episode still succeeds -- literally
+    "Oracle" in miniature). Caller is responsible for policy.reset() before
+    calling this if the policy's internal action queue needs clearing first
+    (rollout_policy_episode does; run_gate2_outcome.py does too, since its
+    candidate sampling used predict_action_chunk() directly and never
+    touched the queue).
+
+    Returns (success, final_step_count, executed_actions, executed_states) --
+    step_count starts at `start_step` and increments from there, so a caller
+    resuming mid-episode gets a correctly-continued count, not one that
+    restarts at 0.
+    """
+    import torch
+
+    _timer = timer if timer is not None else StageTimer()
+
+    success = False
+    executed_actions: list[list[float]] = []
+    executed_states: list[list[float]] = []
+    n_steps = start_step
+
+    while n_steps < max_steps:
+        with _timer.stage("inference"):
+            batched_obs = build_policy_observation(
+                obs,
+                preprocess_observation_fn=preprocess_observation_fn,
+                env_preprocessor=env_preprocessor,
+                preprocessor=preprocessor,
+                task_description=task_description,
+            )
+            with torch.inference_mode():
+                action = policy.select_action(batched_obs)
+            action = postprocessor(action)
+        action_numpy = action[0].to("cpu").numpy()
+
+        eef_pos = np.asarray(obs["robot_state"]["eef"]["pos"], dtype=np.float32)
+        gripper_qpos = np.asarray(obs["robot_state"]["gripper"]["qpos"], dtype=np.float32)
+        executed_states.append(np.concatenate([eef_pos, gripper_qpos]).tolist())
+        executed_actions.append(action_numpy.tolist())
+
+        with _timer.stage("physics"):
+            obs, _reward, terminated, truncated, info = env.step(action_numpy)
+        n_steps += 1
+
+        if info.get("is_success", False):
+            success = True
+        if terminated or truncated:
+            break
+
+    return success, n_steps, executed_actions, executed_states
+
+
 def rollout_policy_episode(
     env: Any,
     policy: Any,
@@ -168,8 +240,6 @@ def rollout_policy_episode(
     sweep already showed 1 vs 10 makes no success-rate difference for this
     checkpoint on libero_10, see README, so this simpler per-step form is
     used here rather than re-adding chunk-execution bookkeeping)."""
-    import torch
-
     timer = StageTimer()
     t_episode_start = time.perf_counter()
 
@@ -179,38 +249,18 @@ def rollout_policy_episode(
     actual_control_mode = read_actual_control_mode(env)
     policy.reset()
 
-    success = False
-    executed_actions: list[list[float]] = []
-    executed_states: list[list[float]] = []
-    n_steps = 0
-
-    while n_steps < max_steps:
-        with timer.stage("inference"):
-            batched_obs = build_policy_observation(
-                obs,
-                preprocess_observation_fn=preprocess_observation_fn,
-                env_preprocessor=env_preprocessor,
-                preprocessor=preprocessor,
-                task_description=task_description,
-            )
-            with torch.inference_mode():
-                action = policy.select_action(batched_obs)
-            action = postprocessor(action)
-        action_numpy = action[0].to("cpu").numpy()
-
-        eef_pos = np.asarray(obs["robot_state"]["eef"]["pos"], dtype=np.float32)
-        gripper_qpos = np.asarray(obs["robot_state"]["gripper"]["qpos"], dtype=np.float32)
-        executed_states.append(np.concatenate([eef_pos, gripper_qpos]).tolist())
-        executed_actions.append(action_numpy.tolist())
-
-        with timer.stage("physics"):
-            obs, _reward, terminated, truncated, info = env.step(action_numpy)
-        n_steps += 1
-
-        if info.get("is_success", False):
-            success = True
-        if terminated or truncated:
-            break
+    success, n_steps, executed_actions, executed_states = step_with_policy_until_done(
+        env,
+        obs,
+        policy,
+        preprocessor=preprocessor,
+        postprocessor=postprocessor,
+        env_preprocessor=env_preprocessor,
+        preprocess_observation_fn=preprocess_observation_fn,
+        task_description=task_description,
+        max_steps=max_steps,
+        timer=timer,
+    )
 
     execution_time = time.perf_counter() - t_episode_start
 

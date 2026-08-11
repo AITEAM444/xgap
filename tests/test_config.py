@@ -8,7 +8,13 @@ import multiprocessing
 import pytest
 import yaml
 
-from xgap_code.config import DemoReplayConfig, GateTwoDiversityConfig, InitStateSweepConfig, PolicyRolloutConfig
+from xgap_code.config import (
+    DemoReplayConfig,
+    GateTwoDiversityConfig,
+    GateTwoOutcomeConfig,
+    InitStateSweepConfig,
+    PolicyRolloutConfig,
+)
 
 
 def _write_yaml(tmp_path, overrides=None):
@@ -224,3 +230,67 @@ def test_gate2_diversity_config_rejects_too_few_candidates(tmp_path):
     path = _write_gate2_yaml(tmp_path, {"n_candidates": 1})
     with pytest.raises(ValueError, match="n_candidates"):
         GateTwoDiversityConfig.from_yaml(path)
+
+
+def _write_gate2_outcome_yaml(tmp_path, overrides=None):
+    base = {
+        "experiment_name": "test_gate2_outcome",
+        "local_output_root": str(tmp_path / "local"),
+        "task_suite": "libero_spatial",
+        "task_ids": [0, 2],
+        "checkpoint_path": "HuggingFaceVLA/smolvla_libero",
+        "source_output_root": str(tmp_path / "source"),
+        "source_condition": "policy_rollout",
+        "source_episode_seed": 0,
+        "branch_fraction": 0.5,
+        "exec_horizon": 10,
+        "max_outcome_trials": 5,
+        "max_steps": 200,
+        "control_mode": "relative",
+        "control_freq": 20,
+        "resume": True,
+    }
+    if overrides:
+        base.update(overrides)
+    path = tmp_path / "gate2_outcome_cfg.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    return str(path)
+
+
+def test_gate2_outcome_config_loads(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path)
+    cfg = GateTwoOutcomeConfig.from_yaml(path)
+    assert cfg.task_ids == [0, 2]
+    assert cfg.branch_fraction == 0.5
+    assert cfg.max_outcome_trials == 5
+    assert cfg.max_steps == 200
+
+
+def test_gate2_outcome_config_rejects_unknown_field(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"bogus_field": 1})
+    with pytest.raises(ValueError, match="Unknown config fields"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_missing_source(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"source_output_root": ""})
+    with pytest.raises(ValueError, match="source_output_root"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_bad_branch_fraction(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"branch_fraction": 1.5})
+    with pytest.raises(ValueError, match="branch_fraction"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_zero_max_outcome_trials(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"max_outcome_trials": 0})
+    with pytest.raises(ValueError, match="max_outcome_trials"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_bad_control_mode(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"control_mode": "sideways"})
+    with pytest.raises(ValueError, match="invalid control_mode"):
+        GateTwoOutcomeConfig.from_yaml(path)

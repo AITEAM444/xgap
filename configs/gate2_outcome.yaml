@@ -1,0 +1,34 @@
+# Gate 2, outcome-based verdict: does candidate diversity actually change
+# whether the episode succeeds? See README "Gate 2: outcome-based verdict"
+# and scripts/run_gate2_outcome.py's module docstring.
+#
+# branch_fraction: point this at whichever fraction the
+# configs/gate2_diversity.yaml sweep ([0.2, 0.5, 0.7]) showed the largest
+# candidate endpoint divergence at -- 0.5 is a placeholder until that sweep
+# is re-run and read; update before running this config for real.
+
+experiment_name: gate2_outcome_libero_spatial
+
+local_output_root: outputs/gate2_outcome/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/gate2_outcome
+
+task_suite: libero_spatial
+task_ids: [0, 2, 4, 5]
+checkpoint_path: HuggingFaceVLA/smolvla_libero
+checkpoint_hash: unknown
+
+# Same shared source as gate2_diversity.yaml -- real recorded Gate-1 episodes.
+source_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1
+source_condition: policy_rollout
+source_episode_seed: 0
+
+branch_fraction: 0.5
+
+exec_horizon: 10
+max_outcome_trials: 5
+max_steps: 200
+
+control_mode: relative
+control_freq: 20
+
+resume: true

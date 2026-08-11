@@ -25,15 +25,17 @@ source_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_sp
 source_condition: policy_rollout
 source_episode_seed: 0
 
-# ONE branch point per task to start, EARLY in the episode (0.2, not 0.5) --
-# prefix replay cost scales directly with prefix length, and this gets
-# multiplied by n_candidates (64) fresh envs for the endpoint metric below.
-# At rollout_length ~100-500 (the range seen in Gate-1), 0.5 would mean a
-# 50-250-step prefix replayed 64 times per task; 0.2 keeps that to ~20-100
-# steps. Add more/later fractions (e.g. [0.2, 0.5, 0.8]) once first-run
-# timing is known -- see README "Gate 2: candidate diversity" for the cost
-# breakdown.
-branch_step_fractions: [0.2]
+# SWEEP, not one point: first result at 0.2 showed real action-level
+# diversity (mean_pairwise_l2 ~4.2-4.6, gripper channel split ~50/50) but
+# ~300x smaller endpoint-position spread -- ambiguous with only exec_horizon=10
+# steps to physically separate in (gripper actuation alone needs 15-20 steps,
+# see gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS). Success trajectories run
+# 66-121 steps, so 0.2 is well before the grasp-critical region -- sweeping
+# to 0.5/0.7 checks whether candidate divergence is actually LARGEST near the
+# real decision point instead. resume: true means the already-computed 0.2
+# results aren't recomputed, only 0.5/0.7 (and any task still missing a
+# source episode) get added.
+branch_step_fractions: [0.2, 0.5, 0.7]
 
 n_candidates: 64
 # Steps of each candidate chunk actually EXECUTED for the endpoint-variance
