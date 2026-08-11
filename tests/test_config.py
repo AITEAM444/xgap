@@ -8,7 +8,7 @@ import multiprocessing
 import pytest
 import yaml
 
-from xgap_code.config import DemoReplayConfig, InitStateSweepConfig, PolicyRolloutConfig
+from xgap_code.config import DemoReplayConfig, GateTwoDiversityConfig, InitStateSweepConfig, PolicyRolloutConfig
 
 
 def _write_yaml(tmp_path, overrides=None):
@@ -168,3 +168,59 @@ def test_policy_rollout_config_rejects_bad_control_mode(tmp_path):
     path = _write_rollout_yaml(tmp_path, {"control_mode": "sideways"})
     with pytest.raises(ValueError, match="invalid control_mode"):
         PolicyRolloutConfig.from_yaml(path)
+
+
+def _write_gate2_yaml(tmp_path, overrides=None):
+    base = {
+        "experiment_name": "test_gate2",
+        "local_output_root": str(tmp_path / "local"),
+        "task_suite": "libero_spatial",
+        "task_ids": [0, 2],
+        "checkpoint_path": "HuggingFaceVLA/smolvla_libero",
+        "source_output_root": str(tmp_path / "source"),
+        "source_condition": "policy_rollout",
+        "source_episode_seed": 0,
+        "branch_step_fractions": [0.5],
+        "n_candidates": 64,
+        "exec_horizon": 10,
+        "control_mode": "relative",
+        "control_freq": 20,
+        "gripper_dim": 6,
+        "resume": True,
+    }
+    if overrides:
+        base.update(overrides)
+    path = tmp_path / "gate2_cfg.yaml"
+    path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    return str(path)
+
+
+def test_gate2_diversity_config_loads(tmp_path):
+    path = _write_gate2_yaml(tmp_path)
+    cfg = GateTwoDiversityConfig.from_yaml(path)
+    assert cfg.task_ids == [0, 2]
+    assert cfg.n_candidates == 64
+
+
+def test_gate2_diversity_config_rejects_unknown_field(tmp_path):
+    path = _write_gate2_yaml(tmp_path, {"bogus_field": 1})
+    with pytest.raises(ValueError, match="Unknown config fields"):
+        GateTwoDiversityConfig.from_yaml(path)
+
+
+def test_gate2_diversity_config_rejects_missing_source(tmp_path):
+    path = _write_gate2_yaml(tmp_path, {"source_output_root": ""})
+    with pytest.raises(ValueError, match="source_output_root"):
+        GateTwoDiversityConfig.from_yaml(path)
+
+
+def test_gate2_diversity_config_rejects_bad_branch_fraction(tmp_path):
+    path = _write_gate2_yaml(tmp_path, {"branch_step_fractions": [1.5]})
+    with pytest.raises(ValueError, match="branch_step_fractions"):
+        GateTwoDiversityConfig.from_yaml(path)
+
+
+def test_gate2_diversity_config_rejects_too_few_candidates(tmp_path):
+    path = _write_gate2_yaml(tmp_path, {"n_candidates": 1})
+    with pytest.raises(ValueError, match="n_candidates"):
+        GateTwoDiversityConfig.from_yaml(path)

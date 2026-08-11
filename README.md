@@ -2137,6 +2137,96 @@ now; the prefix-replay verification above can run independently
 (sequentially, still one GPU) without invalidating anything already
 collected.
 
+## Gate 2: candidate diversity
+
+Does the policy actually propose meaningfully different candidates from
+the same observation, or does it collapse to a single mode? If candidates
+are indistinguishable, there is nothing for an Oracle/World-model/Random
+comparison to select between, and no reason to draw an Oracle curve.
+Raised as a live concern: task 1's Gate-1 run showed 19/20 episodes with
+near-identical `rollout_length` (95-121) and `longest_close_run_steps`
+(39-63) -- a possible single-mode-collapse signature. Checked on the
+actual experiment-set tasks (0, 2, 4, 5 -- 1 deliberately excluded, it's
+the one that already showed the concern) rather than assumed to be fine
+elsewhere just because it showed up there.
+
+**Diversity source: the policy's own intrinsic stochasticity only.** No
+artificially inflated noise scale or temperature -- that would contaminate
+any later multimodality analysis. Verified from source (not guessed) that
+this is achievable cleanly: `SmolVLAPolicy.predict_action_chunk(batch,
+noise=None)` bypasses the action queue entirely (unlike `select_action()`,
+which only calls the underlying chunk predictor when its queue is empty)
+and passes `noise=None` down to `self.model.sample_actions(...)` --
+flow-matching sampling draws fresh internal noise on every call. Calling
+`predict_action_chunk` N times on the SAME observation therefore gives N
+independently-sampled candidate chunks, with zero knobs touched.
+
+**Branch points are real, recorded states, not synthesized ones.** Each
+task's branch point comes from an ALREADY-COMPLETED Gate-1 episode's own
+recorded `action_chunk` (`source_episode_seed`, default 0) -- prefix
+replay (a fresh env, reset, replay the recorded actions up to a chosen
+step; see "Test 2: design change to prefix replay" for why this reaches
+the exact real state deterministically) reaches that point exactly, using
+xgap's own harness.
+
+**Four metrics per (task, branch point), over `n_candidates=64` sampled
+chunks:**
+- per-dimension action std
+- mean pairwise L2 distance between candidate chunks
+- gripper channel (`action[:,6]`) distribution
+- trajectory ENDPOINT variance -- requires actually EXECUTING each
+  candidate's first `exec_horizon` steps from the branch point and
+  recording where the arm ends up (raw action values alone don't capture
+  real dynamics/contact behavior). This is the expensive part: a FRESH env
+  per candidate (Test 2's binding design rule -- reusing one instance
+  across candidates would reintroduce the exact nondeterminism Test 2
+  eliminated), so `n_candidates` fresh envs + prefix replays per branch
+  point.
+
+**Cost note, and why the default branch point is early (0.2), not
+mid-episode (0.5):** prefix-replay cost scales directly with prefix
+length, multiplied by 64 fresh envs for the endpoint metric. Gate-1
+rollout lengths ranged ~95-520 steps; a 0.5 branch fraction would replay a
+50-260-step prefix 64 times per task, a 0.2 fraction keeps that to
+~20-100 steps. `configs/gate2_diversity.yaml` starts with one branch
+point per task (`branch_step_fractions: [0.2]`) for exactly this reason --
+add more fractions once first-run timing is known.
+
+`scripts/run_gate2_diversity.py` (+ pure metrics in
+`xgap_code/diversity_metrics.py`, tested locally without a simulator --
+`tests/test_diversity_metrics.py`). Factored `policy_rollout.py`'s inline
+observation-preprocessing sequence into a shared
+`build_policy_observation()` helper so this script builds the identical
+policy-ready observation `rollout_policy_episode` does, without
+duplicating (and risking drifting from) that sequence.
+
+**One unverified assumption, flagged not hidden:** the postprocessor
+pipeline (`make_pre_post_processors`) is only verified elsewhere in this
+project against `(batch, action_dim)` tensors (`rollout_policy_episode`
+always applies it to one already-dequeued action). Whether it handles a
+full `(batch, T, action_dim)` chunk correctly via broadcasting is
+untested, so `sample_candidates` applies it per-timestep in a loop instead
+of risking that assumption.
+
+```
+!python {XGAP_DRIVE_ROOT}/scripts/run_gate2_diversity.py \
+    --config {XGAP_DRIVE_ROOT}/configs/gate2_diversity.yaml
+```
+
+**This script reports the raw numbers -- it does not decide PASS/FAIL
+itself.** "Meaningfully different" vs "nearly identical" needs a judgment
+call against real physical scale (workspace size, the gripper's `[-1,1]`
+range), which is a design decision, not a fact to hardcode as a constant.
+
+- **Candidates differ meaningfully** -> Gate 2 passes; proceed to drawing
+  the Oracle curve.
+- **Candidates are nearly identical** -> Gate 2 fails -- there is no
+  reason to draw an Oracle curve until this is understood (most likely
+  candidate given task 1's prior pattern: the policy genuinely converges
+  to a low-diversity mode for at least some tasks, which would need
+  addressing -- e.g. via the checkpoint, or via how candidates are
+  selected -- before any best-of-N framing means anything).
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

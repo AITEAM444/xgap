@@ -120,6 +120,27 @@ def _batch_observation(obs: dict) -> dict:
     return _wrap(obs)
 
 
+def build_policy_observation(
+    obs: dict,
+    *,
+    preprocess_observation_fn: Any,
+    env_preprocessor: Any,
+    preprocessor: Any,
+    task_description: str,
+) -> dict:
+    """Turn one raw harness env observation into the exact batched, policy-
+    ready dict `policy.select_action()`/`predict_action_chunk()` expect --
+    the same sequence `rollout_policy_episode`'s loop already does inline,
+    factored out so scripts/run_gate2_diversity.py can build the identical
+    observation without duplicating (and risking drifting from) that
+    sequence."""
+    batched_obs = _batch_observation(obs)
+    batched_obs = preprocess_observation_fn(batched_obs)
+    batched_obs["task"] = [task_description]
+    batched_obs = env_preprocessor(batched_obs)
+    return preprocessor(batched_obs)
+
+
 def rollout_policy_episode(
     env: Any,
     policy: Any,
@@ -165,11 +186,13 @@ def rollout_policy_episode(
 
     while n_steps < max_steps:
         with timer.stage("inference"):
-            batched_obs = _batch_observation(obs)
-            batched_obs = preprocess_observation_fn(batched_obs)
-            batched_obs["task"] = [task_description]
-            batched_obs = env_preprocessor(batched_obs)
-            batched_obs = preprocessor(batched_obs)
+            batched_obs = build_policy_observation(
+                obs,
+                preprocess_observation_fn=preprocess_observation_fn,
+                env_preprocessor=env_preprocessor,
+                preprocessor=preprocessor,
+                task_description=task_description,
+            )
             with torch.inference_mode():
                 action = policy.select_action(batched_obs)
             action = postprocessor(action)

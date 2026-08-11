@@ -1,0 +1,48 @@
+# Gate 2 (candidate diversity): does the policy propose meaningfully
+# different candidates from the same observation? See README "Gate 2:
+# candidate diversity" and scripts/run_gate2_diversity.py's module docstring.
+#
+# Experiment-set tasks per the request: 0, 2, 4, 5 (task 1 excluded on
+# purpose -- it's the one that already showed the single-mode-collapse
+# concern in Gate-1, 19/20 episodes near-identical; checking whether that
+# tendency also shows up in the tasks actually meant for Oracle-curve work).
+
+experiment_name: gate2_diversity_libero_spatial
+
+local_output_root: outputs/gate2_diversity/_local
+remote_output_root: /content/drive/MyDrive/xgap/outputs/gate2_diversity
+
+task_suite: libero_spatial
+task_ids: [0, 2, 4, 5]
+checkpoint_path: HuggingFaceVLA/smolvla_libero
+checkpoint_hash: unknown
+
+# Real recorded episodes from the Gate-1 run(s) -- same shared
+# remote_output_root every task_ids=[N] config (main + per-teammate) writes
+# to, so this works regardless of which config actually produced each
+# task's episode 0, as long as it landed here.
+source_output_root: /content/drive/MyDrive/xgap/outputs/policy_rollout_libero_spatial_gate1
+source_condition: policy_rollout
+source_episode_seed: 0
+
+# ONE branch point per task to start, EARLY in the episode (0.2, not 0.5) --
+# prefix replay cost scales directly with prefix length, and this gets
+# multiplied by n_candidates (64) fresh envs for the endpoint metric below.
+# At rollout_length ~100-500 (the range seen in Gate-1), 0.5 would mean a
+# 50-250-step prefix replayed 64 times per task; 0.2 keeps that to ~20-100
+# steps. Add more/later fractions (e.g. [0.2, 0.5, 0.8]) once first-run
+# timing is known -- see README "Gate 2: candidate diversity" for the cost
+# breakdown.
+branch_step_fractions: [0.2]
+
+n_candidates: 64
+# Steps of each candidate chunk actually EXECUTED for the endpoint-variance
+# metric (not the full predicted chunk, to bound cost -- this project's own
+# exec_horizon config concept, finally in real use).
+exec_horizon: 10
+
+control_mode: relative
+control_freq: 20
+gripper_dim: 6
+
+resume: true

@@ -240,3 +240,89 @@ class PolicyRolloutConfig:
         if unknown:
             raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
         return cls(**raw)
+
+
+@dataclass
+class GateTwoDiversityConfig:
+    """Config for scripts/run_gate2_diversity.py: does the policy actually
+    propose meaningfully different candidates from the same observation, or
+    does it collapse to a single mode (raised as a live concern after task 1
+    showed 19/20 episodes with near-identical rollout_length/close_run
+    values)? If candidates are indistinguishable, there is nothing for an
+    Oracle/World-model/Random comparison to select between -- see README
+    "Gate 2: candidate diversity".
+
+    Branch points are read from ALREADY-RECORDED real episodes (a prior
+    PolicyRolloutConfig run's own EpisodeStore output -- source_output_root/
+    source_condition/source_episode_seed), not synthesized: each task's
+    `source_episode_seed`'th episode's recorded action_chunk supplies the
+    exact prefix needed to reach a real, actually-visited state via prefix
+    replay (see harness.make_real_libero_env's docstring on STANDARD order,
+    and README "Test 2: design change to prefix replay" for why this is
+    deterministic).
+
+    Diversity must come ONLY from the policy's own intrinsic stochasticity
+    (predict_action_chunk(batch, noise=None) sampling fresh flow-matching
+    noise internally each call -- verified from SmolVLAPolicy source, not
+    guessed). No noise-scale/temperature knobs here on purpose -- inflating
+    them would contaminate any later multimodality analysis.
+    """
+
+    experiment_name: str
+    local_output_root: str
+    task_suite: str
+    task_ids: list[int]
+    checkpoint_path: str
+
+    remote_output_root: str | None = None
+
+    # Where to read real recorded episodes (for prefix action_chunks) from --
+    # a PREVIOUS PolicyRolloutConfig run's own output, not this config's own
+    # local_output_root/remote_output_root (which is where THIS script's own
+    # results get written).
+    source_output_root: str = ""
+    source_condition: str = "policy_rollout"
+    source_episode_seed: int = 0
+
+    # Where along the source episode's recorded trajectory to branch, as
+    # fractions of its rollout_length. One state per fraction, per task.
+    branch_step_fractions: list[float] = field(default_factory=lambda: [0.5])
+
+    n_candidates: int = 64
+    # How many of each candidate chunk's steps to actually EXECUTE (fresh env
+    # + prefix replay + these steps) for the endpoint-variance metric -- the
+    # expensive part (n_candidates fresh envs per branch point). Not the
+    # full predicted chunk_size on purpose, to bound cost; this project's own
+    # exec_horizon config concept, finally put to real use.
+    exec_horizon: int = 10
+
+    checkpoint_hash: str = "unknown"
+    control_mode: str = "relative"
+    control_freq: int = 20
+    gripper_dim: int = 6
+
+    resume: bool = True
+
+    def __post_init__(self):
+        if not self.task_ids:
+            raise ValueError("task_ids must be non-empty")
+        if not self.source_output_root:
+            raise ValueError("source_output_root must be set (where to read prefix episodes from)")
+        if not self.branch_step_fractions:
+            raise ValueError("branch_step_fractions must be non-empty")
+        if any(not (0.0 < f < 1.0) for f in self.branch_step_fractions):
+            raise ValueError(f"branch_step_fractions must all be in (0, 1), got {self.branch_step_fractions}")
+        if self.control_mode not in ("relative", "absolute"):
+            raise ValueError(f"invalid control_mode '{self.control_mode}'")
+        if self.n_candidates < 2:
+            raise ValueError("n_candidates must be >= 2 to compute pairwise diversity")
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "GateTwoDiversityConfig":
+        with open(path, encoding="utf-8") as f:
+            raw: dict[str, Any] = yaml.safe_load(f)
+        known = {k for k in cls.__dataclass_fields__}
+        unknown = set(raw) - known
+        if unknown:
+            raise ValueError(f"Unknown config fields in {path}: {sorted(unknown)}")
+        return cls(**raw)
