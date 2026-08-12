@@ -1,34 +1,37 @@
 # Gate 2, outcome-based verdict -- PILOT scale: 1 task, 2 seeds (1 failure
-# + 1 success). The ~5h estimate from before this pilot ran predates a real
-# bug fix (see scripts/run_gate2_outcome.py's module docstring, bug 3) and
-# the discovery that task 0's real failure seeds all have
-# rollout_length=520 -- at branch_fraction=0.5 that's a 260-step prefix
-# BEFORE the handoff even starts, so seed 2's real per-candidate cost is
-# genuinely unknown until measured; watch the printed
-# `candidate=k/n ... elapsed=...` lines for the real number rather than
-# trusting this estimate. A single failure-source seed with n_candidates=64
-# already gives a verdict on its own (see module docstring's
-# "is_primary_signal" -- one failure-source point showing a mixed outcome
-# is sufficient); the success-source seed here is a CONTRAST run, not
-# required for the verdict itself, but confirms the harness behaves as
-# expected (near-always-success from a good trajectory).
+# + 1 success). See README "Gate 2, corrected: fixed absolute branch point,
+# not a fraction" and scripts/run_gate2_outcome.py's module docstring
+# (problem 3) for the full story: branch_fraction=0.5 was REJECTED after a
+# real run -- task 0's real failure seeds all have rollout_length=520, so
+# 0.5 landed at step 260, ~140-190 steps past where any real success
+# trajectory would already have finished (66-121 steps). 26/26 candidates
+# tested there ran their full step budget and still failed -- failure was
+# already fully determined, unrecoverable by any candidate. A fraction of
+# two wildly different episode lengths was never a fair comparison.
+#
+# prefix_length is now a FIXED absolute step count (40, inside the
+# ~30-60 step grasp-critical window every trajectory -- success or
+# failure -- passes through), applied identically regardless of a given
+# source episode's own length. max_steps is back to an ABSOLUTE cap from
+# episode step 0 (200, not Gate-1's 520) -- safe now that prefix_length is
+# fixed and small; GateTwoOutcomeConfig validates
+# prefix_length + exec_horizon < max_steps so this can't silently break
+# again. Per-candidate cost should now be well under the ~265-300s seen
+# with the broken 260-step branch point -- watch the printed
+# `candidate=k/n ... elapsed=...` lines for the real number.
+#
+# A single failure-source seed with n_candidates=64 already gives a
+# verdict on its own (see module docstring's "is_primary_signal" -- one
+# failure-source point showing a mixed outcome is sufficient); the
+# success-source seed here is a CONTRAST run, not required for the
+# verdict itself, but confirms the harness behaves as expected
+# (near-always-success from a good trajectory).
 #
 # If genuinely in a hurry: comment out the success seed below and run only
 # the failure seed -- that alone answers "does Gate 2 pass or fail".
 #
 # Once this pilot passes (is_primary_signal true for the failure seed),
-# scale up via configs/gate2_outcome_full.yaml (4 tasks x 4 seeds). See
-# README "Gate 2, corrected: outcome must branch from failures too" and
-# scripts/run_gate2_outcome.py's module docstring.
-#
-# branch_fraction: FIXED at 0.5 by direct decision, not derived from the
-# gate2_diversity.yaml sweep -- that sweep's endpoint_variance metric is
-# invalidated for verdict purposes (exec_horizon=10 is shorter than the
-# gripper's own 15-20 step actuation lag, so real candidate differences in
-# WHEN they command a close -- frac_commanding_close measured 0.53 at
-# branch_fraction=0.2 vs 0.85 at 0.5 -- can't show up as an endpoint
-# difference within 10 steps). Outcome (success/fail) is the only thing
-# Gate 2 is judged on now.
+# scale up via configs/gate2_outcome_full.yaml (4 tasks x 4 seeds).
 
 experiment_name: gate2_outcome_libero_spatial_pilot
 
@@ -55,13 +58,15 @@ source_condition: policy_rollout
 source_episode_seeds:
   0: [2, 0]  # [failure_seed, success_seed]
 
-branch_fraction: 0.5
+# FIXED absolute step count, not a fraction of rollout_length -- see
+# comment at top of file.
+prefix_length: 40
 
 exec_horizon: 10
 n_candidates: 64
-# Budget for the base-policy handoff, counted FROM THE BRANCH POINT
-# (prefix_length + exec_horizon), not from episode step 0 -- see the bug
-# fix noted above.
+# ABSOLUTE cap on total episode steps from episode step 0 -- see comment
+# at top of file. Must stay > prefix_length + exec_horizon (enforced by
+# GateTwoOutcomeConfig's own validation).
 max_steps: 200
 
 control_mode: relative

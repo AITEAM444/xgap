@@ -242,7 +242,7 @@ def _write_gate2_outcome_yaml(tmp_path, overrides=None):
         "source_output_root": str(tmp_path / "source"),
         "source_condition": "policy_rollout",
         "source_episode_seeds": {0: [1, 2, 3, 4], 2: [1, 2, 3, 4]},
-        "branch_fraction": 0.5,
+        "prefix_length": 40,
         "exec_horizon": 10,
         "n_candidates": 64,
         "max_steps": 200,
@@ -261,7 +261,7 @@ def test_gate2_outcome_config_loads(tmp_path):
     path = _write_gate2_outcome_yaml(tmp_path)
     cfg = GateTwoOutcomeConfig.from_yaml(path)
     assert cfg.task_ids == [0, 2]
-    assert cfg.branch_fraction == 0.5
+    assert cfg.prefix_length == 40
     assert cfg.n_candidates == 64
     assert cfg.max_steps == 200
     assert cfg.source_episode_seeds == {0: [1, 2, 3, 4], 2: [1, 2, 3, 4]}
@@ -279,9 +279,17 @@ def test_gate2_outcome_config_rejects_missing_source(tmp_path):
         GateTwoOutcomeConfig.from_yaml(path)
 
 
-def test_gate2_outcome_config_rejects_bad_branch_fraction(tmp_path):
-    path = _write_gate2_outcome_yaml(tmp_path, {"branch_fraction": 1.5})
-    with pytest.raises(ValueError, match="branch_fraction"):
+def test_gate2_outcome_config_rejects_zero_prefix_length(tmp_path):
+    path = _write_gate2_outcome_yaml(tmp_path, {"prefix_length": 0})
+    with pytest.raises(ValueError, match="prefix_length"):
+        GateTwoOutcomeConfig.from_yaml(path)
+
+
+def test_gate2_outcome_config_rejects_prefix_plus_exec_horizon_over_max_steps(tmp_path):
+    # This is exactly the real bug: prefix_length + exec_horizon >= max_steps
+    # means the base-policy handoff gets zero steps to run.
+    path = _write_gate2_outcome_yaml(tmp_path, {"prefix_length": 195, "exec_horizon": 10, "max_steps": 200})
+    with pytest.raises(ValueError, match="must be < max_steps"):
         GateTwoOutcomeConfig.from_yaml(path)
 
 

@@ -12,44 +12,55 @@ gripper_metrics.DEMO_MIN_ACTUATION_LAG_STEPS) -- that timing difference has
 no window to show up as a physical endpoint difference. Only episode
 success/failure decides Gate 2 now.
 
-**Two design bugs from the first version of this script, both fixed:**
+**Three design bugs across the first attempts at this script, all fixed:**
 1. Only 5 trials per point -- too few to conclude "no diversity" from an
    all-same result. Now `n_candidates` (default 64), still early-stopping
    the moment a mix IS observed (that's already conclusive; the fix only
    raises the ceiling for the all-same case).
-2. Source episodes were always a single SUCCESS episode -- branching at
-   50% into an already-successful trajectory near-guarantees the handed-
-   off base policy also succeeds, regardless of which candidate ran. That
-   tests "does resuming a good trajectory still work", not "does candidate
+2. Source episodes were always a single SUCCESS episode -- branching into
+   an already-successful trajectory near-guarantees the handed-off base
+   policy also succeeds, regardless of which candidate ran. That tests
+   "does resuming a good trajectory still work", not "does candidate
    choice matter" -- unrelated to Gate 2. `source_episode_seeds` is now a
    dict of task_id -> list of seeds mixing real recorded SUCCESS and
    FAILURE episodes (see `scripts/list_source_episode_outcomes.py` to find
    real ones instead of guessing). Failure-source points are the ones that
    matter: "was about to fail, but a good candidate flipped it to success"
    is the literal mechanism an Oracle curve measures.
-
-**A third bug, caught after task 0's real failure seeds turned out to all
-have `rollout_length=520` (ran the full Gate-1 cap):** `max_steps` was
-being applied to the base-policy handoff as an ABSOLUTE cap from episode
-step 0, not a budget from the branch point. Harmless for a short
-SUCCESS-source prefix, but at `branch_fraction=0.5` a 520-step failure
-source gives a 260-step prefix alone -- already past a 200 absolute cap
-before the handoff runs one step, so every candidate returned
-`success=False` regardless of what it did. Fixed in
-`run_one_candidate_outcome`: the handoff's `max_steps` is now
-`step_count + max_steps` (budget counted from the branch point), matching
-what `GateTwoOutcomeConfig.max_steps`'s own comment always said.
+3. The branch point used to be `branch_fraction * rollout_length` -- a
+   FRACTION of each episode's own length. Caught from a real run, not
+   predicted: task 0's real failure seeds all have `rollout_length=520`
+   (ran the full Gate-1 cap), so `branch_fraction=0.5` landed at step 260
+   -- ~140-190 steps past where any real success trajectory would already
+   have finished (66-121 steps). Failure was already fully determined
+   there: 26/26 candidates tested at that point ran their full step budget
+   and still failed, none could recover. A fraction of two wildly
+   different episode lengths was never comparing the same thing.
+   `prefix_length` is now a single FIXED absolute step count (default 40,
+   inside the ~30-60 step grasp-critical window every trajectory passes
+   through) -- the same phase of the task regardless of a given source
+   episode's own length. `max_steps` accordingly reverts to an ABSOLUTE
+   cap from episode step 0 (not a budget added on top of the branch
+   point, which an earlier fix made it) -- safe again now that
+   `prefix_length` is fixed and small (40 << 200), so it can no longer
+   eat the whole budget before the handoff even starts.
+   `GateTwoOutcomeConfig.__post_init__` now also validates
+   `prefix_length + exec_horizon < max_steps` directly, so this class of
+   bug fails loudly at config-load time instead of silently producing a
+   meaningless run.
 
 Procedure, per (task_id, source_episode_seed):
-  1. Reach the branch point via prefix replay (same real recorded Gate-1
-     episode, same construction as run_gate2_diversity.py) -- fresh env,
-     Test 2's binding design rule.
+  1. Reach the branch point via prefix replay to a FIXED absolute
+     `prefix_length` (same real recorded Gate-1 episode, same
+     construction as run_gate2_diversity.py) -- fresh env, Test 2's
+     binding design rule.
   2. Sample ONE candidate action chunk (predict_action_chunk(noise=None) --
      fresh flow-matching noise every call, confirmed from source).
   3. Commit the candidate's first `exec_horizon` steps.
   4. Hand off to the BASE POLICY (closed-loop,
      policy_rollout.step_with_policy_until_done) for the rest of the
-     episode -- literally "Oracle" in miniature.
+     episode, up to `max_steps` TOTAL steps from episode step 0 --
+     literally "Oracle" in miniature.
   5. Record episode_success. Repeat with a FRESH candidate up to
      `n_candidates`, stopping EARLY once both a success and a failure have
      been observed among the outcomes so far.
@@ -108,24 +119,13 @@ def run_one_candidate_outcome(
     max_steps: int,
 ) -> tuple[bool, int]:
     """Fresh env, reach branch state, sample ONE candidate chunk, commit its
-    first exec_horizon steps, then hand off to the base policy for up to
-    `max_steps` MORE steps (a budget counted from the branch point, not
-    from episode step 0 -- see bug note below) until success/termination.
-    Returns (episode_success, total_steps_run) -- total_steps_run includes
-    the prefix, so it's directly comparable to the source episode's own
-    rollout_length.
-
-    BUG FIXED HERE, not a hypothetical: `max_steps` was originally passed
-    straight through to step_with_policy_until_done as an ABSOLUTE cap
-    (start_step=step_count, max_steps=max_steps) -- fine for a short
-    SUCCESS-source prefix (~40-50 steps), but a FAILURE source can have
-    rollout_length=520 (ran the full Gate-1 cap): at branch_fraction=0.5
-    that alone is a 260-step prefix, already past a 200 absolute cap
-    before the handoff runs a single step -- every candidate would return
-    `success=False` regardless of what it actually does, making the
-    failure-source test (the one that decides Gate 2) measure nothing.
-    Fixed by giving the handoff its own `max_steps`-sized budget added ON
-    TOP of wherever the branch point landed."""
+    first exec_horizon steps, then hand off to the base policy until
+    success/termination/max_steps (an ABSOLUTE cap from episode step 0 --
+    safe because `prefix_actions` is built from a FIXED, small
+    `prefix_length`, not a fraction of a possibly-520-step episode; see
+    module docstring, problem 3). Returns (episode_success,
+    total_steps_run) -- total_steps_run includes the prefix, so it's
+    directly comparable to the source episode's own rollout_length."""
     import torch
 
     env, obs = reach_branch_state(
@@ -177,7 +177,7 @@ def run_one_candidate_outcome(
             env_preprocessor=env_preprocessor,
             preprocess_observation_fn=preprocess_observation_fn,
             task_description=task_description,
-            max_steps=step_count + max_steps,
+            max_steps=max_steps,
             start_step=step_count,
         )
         return success or handoff_success, n_steps
@@ -205,10 +205,13 @@ def run_one_branch_point(
     source_success = bool(source_episode["episode_success"])
     full_action_chunk = source_episode["action_chunk"]
     rollout_length = source_episode["rollout_length"]
-    prefix_length = max(1, min(rollout_length - 1, round(cfg.branch_fraction * rollout_length)))
+    # FIXED absolute step count, not a fraction of rollout_length -- see module
+    # docstring, problem 3. Still clamped to rollout_length - 1 as a safety floor
+    # in case some future source episode is shorter than prefix_length itself.
+    prefix_length = min(cfg.prefix_length, rollout_length - 1)
     prefix_actions = full_action_chunk[:prefix_length]
 
-    result_path = out_dir / f"task{task_id}_seed{seed}_frac{cfg.branch_fraction}_outcomes.json"
+    result_path = out_dir / f"task{task_id}_seed{seed}_prefix{prefix_length}_outcomes.json"
     if cfg.resume and result_path.exists():
         print(f"  seed={seed}: resumed from {result_path}")
         return json.loads(result_path.read_text())
@@ -249,7 +252,7 @@ def run_one_branch_point(
         "task_id": task_id,
         "source_episode_seed": seed,
         "source_episode_success": source_success,
-        "branch_fraction": cfg.branch_fraction,
+        "source_rollout_length": rollout_length,
         "prefix_length": prefix_length,
         "n_candidates_run": len(outcomes),
         "outcomes": outcomes,

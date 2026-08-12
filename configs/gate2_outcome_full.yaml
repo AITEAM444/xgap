@@ -4,14 +4,16 @@
 # failure-source seed). See README "Gate 2, corrected" and
 # scripts/run_gate2_outcome.py's module docstring.
 #
-# branch_fraction: FIXED at 0.5 by direct decision, not derived from the
-# gate2_diversity.yaml sweep -- that sweep's endpoint_variance metric is
-# invalidated for verdict purposes (exec_horizon=10 is shorter than the
-# gripper's own 15-20 step actuation lag, so real candidate differences in
-# WHEN they command a close -- frac_commanding_close measured 0.53 at
-# branch_fraction=0.2 vs 0.85 at 0.5 -- can't show up as an endpoint
-# difference within 10 steps). Outcome (success/fail) is the only thing
-# Gate 2 is judged on now.
+# prefix_length: FIXED absolute step count (40), NOT a fraction of each
+# episode's rollout_length -- branch_fraction was tried and rejected after
+# a real run: task 0's real failure seeds all have rollout_length=520, so
+# branch_fraction=0.5 landed at step 260, past where any real success
+# trajectory would already have finished (66-121 steps) -- unrecoverable,
+# confirmed by 26/26 candidates there running the full step budget and
+# still failing. See README "Gate 2, corrected: fixed absolute branch
+# point, not a fraction" and scripts/run_gate2_outcome.py's module
+# docstring (problem 3) for the full story. Outcome (success/fail) is the
+# only thing Gate 2 is judged on.
 
 experiment_name: gate2_outcome_libero_spatial_full
 
@@ -47,13 +49,13 @@ source_episode_seeds:
   4: [999, 998]    # PLACEHOLDER -- replace with real task-4 seeds
   5: [999, 998]    # PLACEHOLDER -- replace with real task-5 seeds
 
-branch_fraction: 0.5
+prefix_length: 40
 
 exec_horizon: 10
 n_candidates: 64
-# Budget for the base-policy handoff, counted FROM THE BRANCH POINT
-# (prefix_length + exec_horizon), not from episode step 0 -- see module
-# docstring bug 3.
+# ABSOLUTE cap on total episode steps from episode step 0 -- safe now that
+# prefix_length is fixed and small; must stay > prefix_length + exec_horizon
+# (enforced by GateTwoOutcomeConfig's own validation).
 max_steps: 200
 
 control_mode: relative

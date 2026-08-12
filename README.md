@@ -2415,6 +2415,53 @@ episode), then the pilot:
     --config {XGAP_DRIVE_ROOT}/configs/gate2_outcome.yaml
 ```
 
+## Gate 2, corrected: fixed absolute branch point, not a fraction
+
+**The pilot's first real candidate immediately exposed a third, more
+fundamental problem than the `max_steps` budget bug above -- confirmed
+from real evidence, not predicted:** `branch_fraction=0.5` applied to
+task 0's failure seed 2 (`rollout_length=520`, ran the full Gate-1 cap)
+lands the branch point at step 260. Real success trajectories finish in
+66-121 steps -- step 260 is **140-190 steps past where the episode would
+already be over if it were succeeding**. **26/26 candidates tested at
+that point ran their full step budget and still failed** -- direct
+evidence that failure was already fully determined there, unrecoverable
+by any candidate regardless of choice. The `max_steps`-as-budget fix
+above made the handoff actually RUN, but running it at an
+already-hopeless point just burns compute (~265-300s/candidate,
+confirmed) without ever being able to show diversity mattering.
+
+**The deeper issue: `branch_fraction` was never comparing the same thing
+across success and failure sources.** 50% of an 80-step success episode
+(~step 40) and 50% of a 520-step failure episode (~step 260) are
+*different phases of the task* -- one is mid-approach, the other is deep
+into a stuck failure well past when the task should have ended. A
+fraction of two wildly different lengths isn't a fair comparison; it was
+never going to be, independent of the `max_steps` bug.
+
+**Fix:** `GateTwoOutcomeConfig.prefix_length` -- a single FIXED absolute
+step count (default 40), not a fraction. 40 sits inside the ~30-60 step
+grasp-critical window that every trajectory, success or failure, actually
+passes through, so every branch point now looks at the same phase of the
+task regardless of how long that particular episode's own recording was.
+`max_steps` correspondingly reverts to being an ABSOLUTE cap counted from
+episode step 0 again (not a budget added on top of the branch point) --
+safe now that `prefix_length` is fixed and small (40, well under 200), so
+it can never again eat the whole budget before the handoff starts.
+`GateTwoOutcomeConfig.__post_init__` now directly validates
+`prefix_length + exec_horizon < max_steps`, so this entire class of bug
+(a branch point that leaves the handoff zero steps to run) fails loudly
+at config-load time instead of silently producing a meaningless multi-hour
+run.
+
+`configs/gate2_outcome.yaml` and `configs/gate2_outcome_full.yaml`:
+`branch_fraction: 0.5` replaced with `prefix_length: 40` throughout.
+Result filenames also changed (`task{N}_seed{S}_prefix{P}_outcomes.json`,
+not `..._frac{F}_...`) -- this means `resume: true` will NOT pick up the
+old, invalid `frac0.5` result files from before this fix, which is the
+correct behavior (they measured nothing real and shouldn't be treated as
+completed work).
+
 ## Design constraints encoded in this codebase (do not violate)
 
 - `n_decision_points` (config field `n_decision_points`, default `1`) must be applied identically across Oracle / World-model / Random conditions — enforced in code, not by convention.

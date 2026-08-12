@@ -345,8 +345,8 @@ class GateTwoOutcomeConfig:
     measurement stops once the branch_step_fractions=0.7 sweep point
     finishes; kept only as diagnostic evidence, not a Gate 2 input.
 
-    Two design bugs in the first outcome-script attempt, both fixed here,
-    not just relaxed:
+    Three design bugs in the first outcome-script attempts, all fixed
+    here, not just relaxed:
 
     1. **`n_candidates` must actually be ~64, not 5.** A run of only 5
        trials that comes back all-same is NOT enough evidence to declare
@@ -356,18 +356,36 @@ class GateTwoOutcomeConfig:
        still correct and kept; the fix is raising the ceiling for the
        all-same case from 5 to 64 before concluding FAIL.
     2. **Source episodes must include real FAILURES, not only successes.**
-       Branching at 50% into an already-successful demo near-guarantees
-       the handed-off base policy also succeeds, regardless of which
-       candidate was committed -- that tests "does resuming a good
-       trajectory still work", not "does candidate choice matter", and
-       says nothing about Gate 2. Failure-source branch points are the
-       ones that actually matter: "was about to fail, but a good candidate
-       flipped it to success" is the literal mechanism an Oracle curve
-       measures. `source_episode_seeds` is therefore a dict keyed by
-       `task_id` (not one scalar seed) -- pick a mix per task (~2 success +
-       ~2 failure is a reasonable starting point), found via
+       Branching into an already-successful demo near-guarantees the
+       handed-off base policy also succeeds, regardless of which candidate
+       was committed -- that tests "does resuming a good trajectory still
+       work", not "does candidate choice matter", and says nothing about
+       Gate 2. Failure-source branch points are the ones that actually
+       matter: "was about to fail, but a good candidate flipped it to
+       success" is the literal mechanism an Oracle curve measures.
+       `source_episode_seeds` is therefore a dict keyed by `task_id` (not
+       one scalar seed) -- pick a mix per task (~2 success + ~2 failure is
+       a reasonable starting point), found via
        `scripts/list_source_episode_outcomes.py` against the real Gate-1
        recordings rather than guessed.
+    3. **The branch point must be a FIXED absolute step count, not a
+       fraction of each episode's own (wildly variable) rollout_length.**
+       This was caught from a real run, not predicted: task 0's real
+       failure seeds all have `rollout_length=520` (ran the full Gate-1
+       cap), while success trajectories finish in 66-121 steps. A
+       `branch_fraction=0.5` point therefore lands at step 260 on a
+       failure source but step ~40 on a success source -- two completely
+       different phases of the task, so the two conditions were never
+       comparable to begin with. Worse, step 260 is already ~140-190
+       steps past where any real success trajectory would have finished --
+       failure is already fully determined there, and no candidate can
+       recover from it (confirmed empirically: 26/26 candidates tested at
+       that point ran their full step budget and still failed). `prefix_length`
+       is now a single FIXED absolute step count (default 40, inside the
+       grasp-critical ~30-60 step window every trajectory -- success or
+       failure -- passes through), applied identically regardless of a
+       given source episode's own length, so every branch point is
+       actually looking at the same phase of the task.
 
     At each (task_id, seed) branch point: sample ONE candidate, commit its
     first `exec_horizon` steps, hand off to the BASE POLICY (closed-loop,
@@ -388,9 +406,14 @@ class GateTwoOutcomeConfig:
     evidence against that specific point (not automatically an overall
     Gate 2 failure by itself -- see README "Gate 2, corrected").
 
-    `branch_fraction` is FIXED at 0.5 by direct decision (not derived from
-    the now-invalidated endpoint-variance sweep) -- single value, not a
-    list, since this script isn't swept itself.
+    `max_steps` is back to being an ABSOLUTE cap counted from episode step
+    0 (not a budget added on top of the branch point, which an earlier fix
+    made it) -- safe again now that `prefix_length` is fixed and small
+    (40 << 200), so it can no longer eat the whole budget before the
+    handoff even starts. 200, not Gate-1's 520: success trajectories run
+    66-121 steps, so 200 leaves ~150 steps of margin after a prefix_length=40
+    branch while substantially cutting failure-candidate cost (measured
+    ~470-step/265s candidates before this fix, now capped at 200 steps).
     """
 
     experiment_name: str
@@ -408,7 +431,11 @@ class GateTwoOutcomeConfig:
     # 2). Must have a non-empty entry for every task_id in `task_ids`.
     source_episode_seeds: dict[int, list[int]] = field(default_factory=dict)
 
-    branch_fraction: float = 0.5
+    # FIXED absolute step count for every branch point, regardless of a
+    # given source episode's own rollout_length -- see class docstring,
+    # problem 3. 40 is inside the ~30-60 step grasp-critical window every
+    # trajectory (success or failure) passes through.
+    prefix_length: int = 40
 
     # Steps of the sampled candidate's OWN chunk committed before handing off
     # to the base policy -- same role as GateTwoDiversityConfig's exec_horizon.
@@ -418,14 +445,10 @@ class GateTwoOutcomeConfig:
     # docstring, problem 1) -- 5 trials all landing the same result is not
     # enough evidence to conclude "no diversity that matters".
     n_candidates: int = 64
-    # Step budget for the base-policy handoff, counted FROM THE BRANCH POINT
-    # (prefix_length + exec_horizon), not from episode step 0 -- lower than
-    # Gate-1's 520 on purpose: success trajectories ran 66-121 steps, so 200
-    # leaves real margin while cutting failure-episode cost substantially.
-    # Counted-from-0 was a real bug caught before use: a FAILURE source can
-    # have rollout_length=520, so branch_fraction=0.5 alone can already
-    # exceed a from-0 cap of 200 before the handoff runs a single step (see
-    # scripts/run_gate2_outcome.py's run_one_candidate_outcome docstring).
+    # ABSOLUTE cap on total episode steps (from episode step 0), not a
+    # budget added on top of the branch point -- see class docstring. Only
+    # safe because prefix_length is fixed and small; must stay comfortably
+    # above prefix_length + exec_horizon (validated below).
     max_steps: int = 200
 
     checkpoint_hash: str = "unknown"
@@ -450,8 +473,15 @@ class GateTwoOutcomeConfig:
         empty = [t for t, seeds in self.source_episode_seeds.items() if not seeds]
         if empty:
             raise ValueError(f"source_episode_seeds has empty seed lists for task_ids {empty}")
-        if not (0.0 < self.branch_fraction < 1.0):
-            raise ValueError(f"branch_fraction must be in (0, 1), got {self.branch_fraction}")
+        if self.prefix_length < 1:
+            raise ValueError(f"prefix_length must be >= 1, got {self.prefix_length}")
+        if self.prefix_length + self.exec_horizon >= self.max_steps:
+            raise ValueError(
+                f"prefix_length ({self.prefix_length}) + exec_horizon ({self.exec_horizon}) must be "
+                f"< max_steps ({self.max_steps}) -- otherwise the base-policy handoff gets zero steps "
+                f"to run (this is exactly the bug that made the branch_fraction=0.5 design meaningless "
+                f"for a 520-step failure source, see class docstring, problem 3)"
+            )
         if self.control_mode not in ("relative", "absolute"):
             raise ValueError(f"invalid control_mode '{self.control_mode}'")
         if self.n_candidates < 1:
