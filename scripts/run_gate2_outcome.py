@@ -28,6 +28,18 @@ success/failure decides Gate 2 now.
    matter: "was about to fail, but a good candidate flipped it to success"
    is the literal mechanism an Oracle curve measures.
 
+**A third bug, caught after task 0's real failure seeds turned out to all
+have `rollout_length=520` (ran the full Gate-1 cap):** `max_steps` was
+being applied to the base-policy handoff as an ABSOLUTE cap from episode
+step 0, not a budget from the branch point. Harmless for a short
+SUCCESS-source prefix, but at `branch_fraction=0.5` a 520-step failure
+source gives a 260-step prefix alone -- already past a 200 absolute cap
+before the handoff runs one step, so every candidate returned
+`success=False` regardless of what it did. Fixed in
+`run_one_candidate_outcome`: the handoff's `max_steps` is now
+`step_count + max_steps` (budget counted from the branch point), matching
+what `GateTwoOutcomeConfig.max_steps`'s own comment always said.
+
 Procedure, per (task_id, source_episode_seed):
   1. Reach the branch point via prefix replay (same real recorded Gate-1
      episode, same construction as run_gate2_diversity.py) -- fresh env,
@@ -96,10 +108,24 @@ def run_one_candidate_outcome(
     max_steps: int,
 ) -> tuple[bool, int]:
     """Fresh env, reach branch state, sample ONE candidate chunk, commit its
-    first exec_horizon steps, then hand off to the base policy until
-    success/termination/max_steps. Returns (episode_success, total_steps_run)
-    -- total_steps_run includes the prefix, so it's directly comparable to
-    the source episode's own rollout_length."""
+    first exec_horizon steps, then hand off to the base policy for up to
+    `max_steps` MORE steps (a budget counted from the branch point, not
+    from episode step 0 -- see bug note below) until success/termination.
+    Returns (episode_success, total_steps_run) -- total_steps_run includes
+    the prefix, so it's directly comparable to the source episode's own
+    rollout_length.
+
+    BUG FIXED HERE, not a hypothetical: `max_steps` was originally passed
+    straight through to step_with_policy_until_done as an ABSOLUTE cap
+    (start_step=step_count, max_steps=max_steps) -- fine for a short
+    SUCCESS-source prefix (~40-50 steps), but a FAILURE source can have
+    rollout_length=520 (ran the full Gate-1 cap): at branch_fraction=0.5
+    that alone is a 260-step prefix, already past a 200 absolute cap
+    before the handoff runs a single step -- every candidate would return
+    `success=False` regardless of what it actually does, making the
+    failure-source test (the one that decides Gate 2) measure nothing.
+    Fixed by giving the handoff its own `max_steps`-sized budget added ON
+    TOP of wherever the branch point landed."""
     import torch
 
     env, obs = reach_branch_state(
@@ -151,7 +177,7 @@ def run_one_candidate_outcome(
             env_preprocessor=env_preprocessor,
             preprocess_observation_fn=preprocess_observation_fn,
             task_description=task_description,
-            max_steps=max_steps,
+            max_steps=step_count + max_steps,
             start_step=step_count,
         )
         return success or handoff_success, n_steps

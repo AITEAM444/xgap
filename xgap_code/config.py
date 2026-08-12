@@ -418,10 +418,14 @@ class GateTwoOutcomeConfig:
     # docstring, problem 1) -- 5 trials all landing the same result is not
     # enough evidence to conclude "no diversity that matters".
     n_candidates: int = 64
-    # Episode cap AFTER the handoff -- lower than Gate-1's 520 on purpose:
-    # success trajectories ran 66-121 steps, so 200 leaves real margin while
-    # cutting failure-episode cost substantially (failures no longer run to
-    # 520).
+    # Step budget for the base-policy handoff, counted FROM THE BRANCH POINT
+    # (prefix_length + exec_horizon), not from episode step 0 -- lower than
+    # Gate-1's 520 on purpose: success trajectories ran 66-121 steps, so 200
+    # leaves real margin while cutting failure-episode cost substantially.
+    # Counted-from-0 was a real bug caught before use: a FAILURE source can
+    # have rollout_length=520, so branch_fraction=0.5 alone can already
+    # exceed a from-0 cap of 200 before the handoff runs a single step (see
+    # scripts/run_gate2_outcome.py's run_one_candidate_outcome docstring).
     max_steps: int = 200
 
     checkpoint_hash: str = "unknown"

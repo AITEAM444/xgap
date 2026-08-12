@@ -2352,15 +2352,44 @@ already the design from the start of this script, not a change -- success
 trajectories measured so far run 66-121 steps, so 200 leaves real margin
 while substantially cutting failure-episode cost versus a 520 cap.
 
+**Bug found and fixed before any candidate actually ran (task 0's real
+failure seeds turned out to have `rollout_length=520` -- ran the full
+Gate-1 cap, all 8 of them):** `max_steps` was being passed to the
+base-policy handoff as an ABSOLUTE cap counted from episode step 0
+(`step_with_policy_until_done(..., max_steps=cfg.max_steps,
+start_step=step_count)`), not as a budget counted from the branch point.
+That's harmless for a short SUCCESS-source prefix (~40-50 steps at
+`branch_fraction=0.5`), but for a FAILURE source at `rollout_length=520`,
+the prefix ALONE is `0.5*520=260` steps -- already past a 200 absolute
+cap before the handoff runs a single step. Every candidate would have
+returned `success=False` from the handoff regardless of what it actually
+did, making the failure-source test -- the one that actually decides Gate
+2 -- measure nothing. **Fixed:** the handoff now gets its own
+`max_steps`-sized budget added on top of the branch point
+(`run_one_candidate_outcome` in `scripts/run_gate2_outcome.py`), matching
+what `GateTwoOutcomeConfig.max_steps`'s own comment always said ("cap
+AFTER the handoff") but the code didn't actually do.
+
+**Cost consequence of the fix, specific to failure-source seeds with a
+long `rollout_length`:** seed 2 (task 0's chosen failure seed,
+`rollout_length=520`) now costs MORE per candidate than the ~260s average
+above, not less -- prefix replay alone is 260 physics-only steps before
+`exec_horizon`/handoff even start. Read the printed
+`candidate=k/n ... elapsed=...` lines from the real run for the actual
+number rather than trusting this estimate; it's a genuine unknown until
+measured, not a shrug.
+
 **Pilot first, not the full design.** `configs/gate2_outcome.yaml` is now
-the PILOT config -- 1 task (task 0), 2 seeds (1 failure + 1 success,
-~5 hours) -- not the full 4-task sweep. A single failure-source seed with
-`n_candidates=64` already gives a real verdict on its own (that's exactly
-what `is_primary_signal` measures); the success-source seed is a contrast
-run, not required for the verdict. **If genuinely in a hurry, comment out
-the success seed and run only the failure seed** -- that alone answers
-pass/fail. Scale up to the full design
-(`configs/gate2_outcome_full.yaml`) only after the pilot passes.
+the PILOT config -- 1 task (task 0), 2 seeds (1 failure + 1 success) --
+not the full 4-task sweep, though the ~5 hour estimate above predates the
+bug fix and the confirmed 520-step failure seed, so treat it as stale
+until the pilot's own `elapsed=` logs give a real number. A single
+failure-source seed with `n_candidates=64` already gives a real verdict on
+its own (that's exactly what `is_primary_signal` measures); the
+success-source seed is a contrast run, not required for the verdict. **If
+genuinely in a hurry, comment out the success seed and run only the
+failure seed** -- that alone answers pass/fail. Scale up to the full
+design (`configs/gate2_outcome_full.yaml`) only after the pilot passes.
 
 **Progress logging, added after the first real run went quiet for
 minutes at a time with no output** (not stalled -- 64 candidates run

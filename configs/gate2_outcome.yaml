@@ -1,10 +1,16 @@
 # Gate 2, outcome-based verdict -- PILOT scale: 1 task, 2 seeds (1 failure
-# + 1 success), ~5 hours instead of the full 4-task x 4-seed run's ~74
-# hours. A single failure-source seed with n_candidates=64 each already
-# gives a verdict (see module docstring's "is_primary_signal" -- one
-# failure-source point showing a mixed outcome is sufficient on its own);
-# the success-source seed here is a CONTRAST run, not required for the
-# verdict itself, but cheap to include and confirms the harness behaves as
+# + 1 success). The ~5h estimate from before this pilot ran predates a real
+# bug fix (see scripts/run_gate2_outcome.py's module docstring, bug 3) and
+# the discovery that task 0's real failure seeds all have
+# rollout_length=520 -- at branch_fraction=0.5 that's a 260-step prefix
+# BEFORE the handoff even starts, so seed 2's real per-candidate cost is
+# genuinely unknown until measured; watch the printed
+# `candidate=k/n ... elapsed=...` lines for the real number rather than
+# trusting this estimate. A single failure-source seed with n_candidates=64
+# already gives a verdict on its own (see module docstring's
+# "is_primary_signal" -- one failure-source point showing a mixed outcome
+# is sufficient); the success-source seed here is a CONTRAST run, not
+# required for the verdict itself, but confirms the harness behaves as
 # expected (near-always-success from a good trajectory).
 #
 # If genuinely in a hurry: comment out the success seed below and run only
@@ -53,6 +59,9 @@ branch_fraction: 0.5
 
 exec_horizon: 10
 n_candidates: 64
+# Budget for the base-policy handoff, counted FROM THE BRANCH POINT
+# (prefix_length + exec_horizon), not from episode step 0 -- see the bug
+# fix noted above.
 max_steps: 200
 
 control_mode: relative
